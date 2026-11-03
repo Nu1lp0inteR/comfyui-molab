@@ -2,45 +2,39 @@
 setlocal
 cd /d "%~dp0"
 echo ==================================================
-echo   comfyui-molab  -  publish and push
+echo   comfyui-molab  -  push to GitHub
 echo ==================================================
 echo.
-echo Step 1: make sure the repo is PUBLIC
-echo   Opening https://github.com/NullPointeR/comfyui-molab/settings ...
+echo Repo: https://github.com/Nu1lp0inteR/comfyui-molab
 echo.
-start "" "https://github.com/NullPointeR/comfyui-molab/settings"
-echo   Scroll to the bottom, find "Danger Zone":
-echo     Change repository visibility  -^>  Make public
-echo   If it is already public, just skip this step.
-echo.
-echo   (molab cannot read private repos, so public is required.)
+echo A browser window will pop up asking you to sign in to GitHub.
+echo Make sure you sign in as  Nu1lp0inteR  (digit 1 and zero, not letters).
 echo.
 pause
 
 echo.
-echo Step 2: pushing (a browser window will pop up for GitHub login)
+echo Pushing...
 echo.
 git -c credential.helper=manager push -u origin main
 if errorlevel 1 goto :failed
 
 echo.
-echo Step 3: done. Open the notebook in molab:
+echo Done. Open the notebook in molab with:
 echo.
-echo   https://molab.marimo.io/github/NullPointeR/comfyui-molab/blob/main/comfyui_molab.py
-echo.
-echo Copy that link into your browser.
+echo   https://molab.marimo.io/github/Nu1lp0inteR/comfyui-molab/blob/main/comfyui_molab.py
 echo.
 pause
 exit /b 0
 
 :failed
 echo.
-echo Push failed.
-echo   repository not found  -^> check the repo name at github.com/NullPointeR?tab=repositories
-echo   Authentication failed -^> finish the GitHub login window, then run this again
-echo.
-echo If the login window never appears, run this once in the same folder:
-echo   git credential-manager github login
+echo Push failed. What to do:
+echo   1. If the login window never appeared, run this once in this folder:
+echo        git credential-manager github login
+echo   2. Then run this script again.
+echo   3. If it says "Authentication failed" but you did log in, open
+echo      Windows Credential Manager and delete any entry named
+echo      "git:https://github.com", then run this script again.
 echo.
 pause
 exit /b 1
