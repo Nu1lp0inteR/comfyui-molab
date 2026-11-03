@@ -1,0 +1,341 @@
+# ComfyUI on molab —— 粘贴版
+# 「===== 第 N 格 =====」之间是一格的完整内容，整段复制粘进 molab 的新单元格。
+# 顺序别乱；一格跑完看结果再跑下一格。第 1 格只 import marimo。
+
+# ===== 第 1 格 =====
+import marimo as mo
+
+# ===== 第 2 格 =====
+mo.md(
+    r"""
+# ComfyUI on molab（cloudflared 打通外网）
+
+molab 本身不暴露端口，所以这里用 **cloudflared quick tunnel** 把容器内的 `127.0.0.1:8188`
+映射成一个公网 https 地址，你在自己浏览器里打开就能看到完整的 ComfyUI 画布。
+
+两个必须知道的点：
+
+1. 那个地址**没有任何鉴权**，拿到链接的人都能用你的卡。用完跑最后一个 cell 关掉。
+2. 地址**每次重启都会变**（quick tunnel 是匿名的临时隧道）。
+"""
+)
+
+# ===== 第 3 格 =====
+import json
+import pathlib
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+# ===== 第 4 格 =====
+COMFY_ROOT = pathlib.Path.home() / "comfy"
+COMFY_DIR = COMFY_ROOT / "ComfyUI"
+MODELS = COMFY_DIR / "models"
+COMFY_URL = "http://127.0.0.1:8188"
+
+_gpu = subprocess.run(
+    ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+    capture_output=True,
+    text=True,
+)
+_free = shutil.disk_usage(str(pathlib.Path.home())).free / 2**30
+mo.md(
+    f"""
+| 项目 | 值 |
+|---|---|
+| 工作目录 | `{COMFY_DIR}` |
+| GPU | `{_gpu.stdout.strip() or "未检测到（先在标题栏打开 GPU）"}` |
+| 可用磁盘 | {_free:.1f} GB |
+| 架构 | {platform.machine()} / {sys.version.split()[0]} |
+"""
+)
+
+# ===== 第 5 格 =====
+if not (COMFY_DIR / "main.py").exists():
+    COMFY_ROOT.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/comfyanonymous/ComfyUI",
+            str(COMFY_DIR),
+        ],
+        check=True,
+    )
+
+# Blackwell（RTX Pro 6000, sm_120）必须 cu128 及以上
+subprocess.run(
+    [
+        sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+        "torch", "torchvision", "torchaudio",
+        "--index-url", "https://download.pytorch.org/whl/cu128",
+    ],
+    check=True,
+)
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")],
+    check=True,
+)
+
+_ver = subprocess.run(
+    [sys.executable, "-c", "import torch;print(torch.__version__, '| cuda:', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-')"],
+    capture_output=True,
+    text=True,
+)
+mo.md(f"安装完成：`{_ver.stdout.strip()}`")
+
+# ===== 第 6 格 =====
+mo.md(
+    r"""
+## 下载模型：只改这三行
+
+```python
+dl(  "https://...resolve/main/xxx.safetensors" ,  "checkpoints" )
+     ↑ 改这里：HF 上复制来的链接            ↑ 改这里：放哪个子目录
+```
+
+| 你想下什么 | 第二个参数填 |
+|---|---|
+| 大模型（checkpoint、Flux 全家桶） | `"checkpoints"` |
+| VAE | `"vae"` |
+| CLIP / T5 文本编码器 | `"clip"` |
+| LoRA | `"loras"` |
+| ControlNet | `"controlnet"` |
+| 放大模型 | `"upscale_models"` |
+
+**链接怎么拿**：HuggingFace 模型页 → `Files and versions` → 点你要的文件 →
+右键 `Copy link address`，得到形如
+`https://huggingface.co/<用户>/<仓库>/resolve/main/<文件名>` 的地址。
+注意是 `resolve` 而不是 `blob`。
+"""
+)
+
+# ===== 第 7 格 =====
+def dl(url, subdir, filename=None, headers=None):
+    """下载到 models/<subdir>/，带断点续传。
+
+    url     : 任意直链（HF / ModelScope / Civitai / GitHub Release 都行）
+    subdir  : checkpoints / vae / clip / loras / controlnet / upscale_models
+    filename: 想改名才填，否则自动取 URL 最后一段
+    headers : 需要鉴权时传，如 {"Authorization": "Bearer hf_xxx"}
+    """
+    dest_dir = MODELS / subdir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    name = filename or urllib.parse.unquote(url.split("?")[0].rstrip("/").split("/")[-1])
+    dest = dest_dir / name
+
+    MIN = 1024 * 1024
+    if dest.exists() and dest.stat().st_size > MIN:
+        return f"已存在，跳过：`{subdir}/{name}` ({dest.stat().st_size / 2**30:.2f} GB)"
+
+    cmd = ["curl", "-L", "-C", "-", "--retry", "3", "--retry-delay", "2", "-o", str(dest)]
+    for _k, _v in (headers or {}).items():
+        cmd += ["-H", f"{_k}: {_v}"]
+    _r = subprocess.run(cmd + [url], capture_output=True, text=True)
+
+    if not dest.exists():
+        _req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(_req, timeout=120) as _res, open(dest, "wb") as _f:
+            shutil.copyfileobj(_res, _f)
+
+    if dest.stat().st_size < MIN:
+        with open(dest, "rb") as _f:
+            _head = _f.read(200).decode("utf-8", "ignore").strip()
+        dest.unlink(missing_ok=True)
+        return (
+            f"❌ `{name}` 下载失败，返回的是文本而不是模型（已删除）：\n"
+            f"```\n{_head[:150]}\n```\n"
+            f"通常是链接写错（blob/main）、文件改名了、或需要登录——需要鉴权就加 headers 参数。"
+        )
+    return f"完成：`{subdir}/{name}` ({dest.stat().st_size / 2**30:.2f} GB)"
+
+# ══════════ 要下什么模型，只改下面这个列表 ══════════
+# 格式：(链接, 子目录, 可选的新文件名；不需要就写 None)
+#
+# HuggingFace  : https://huggingface.co/<用户>/<仓库>/resolve/main/<文件名>
+# ModelScope   : https://modelscope.cn/models/<组织>/<模型>/resolve/master/<文件名>
+#                （注意是 master，不是 main）
+# Civitai      : https://civitai.com/api/download/models/<版本ID>?token=<你的token>
+# GitHub       : 用 releases/download/... 的资产直链
+#
+# 需要鉴权的写法：
+#   dl(URL, "loras", None, {"Authorization": "Bearer hf_xxxxxxxx"})
+#   dl(URL, "loras", None, {"Cookie": "m_session_id=xxxx"})
+
+DOWNLOADS = [
+    (
+        "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
+        "checkpoints",
+        None,
+    ),
+    # 加模型就照抄一行，改链接和目录：
+    # ("https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors", "checkpoints", None),
+    # ("https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors", "checkpoints", None),
+    # ("https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth", "upscale_models", None),
+    # 国内源示例（把组织/模型/文件名换成你页面上的实际值）：
+    # ("https://modelscope.cn/models/<组织>/<模型>/resolve/master/<文件名>.safetensors", "checkpoints", None),
+]
+# ═══════════════════════════════════════════════
+
+_r = [dl(_u, _s, _f) for _u, _s, _f in DOWNLOADS]
+mo.md("\n\n".join(_r))
+
+# ===== 第 8 格 =====
+def _stats():
+    try:
+        with urllib.request.urlopen(f"{COMFY_URL}/system_stats", timeout=2) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+LOG = COMFY_DIR.parent / "comfyui.log"
+proc = None
+
+if _stats() is None:
+    proc = subprocess.Popen(
+        [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188"],
+        cwd=str(COMFY_DIR),
+        stdout=open(LOG, "w"),
+        stderr=subprocess.STDOUT,
+    )
+    for _ in range(120):
+        if _stats() is not None:
+            break
+        time.sleep(2)
+
+_s = _stats()
+if _s:
+    _dev = _s.get("devices", [{}])[0]
+    mo.md(f"ComfyUI 已就绪：`{COMFY_URL}` · {_dev.get('name', '')} · VRAM {_dev.get('vram_total', 0) / 2**30:.0f} GB")
+else:
+    mo.md("启动失败，日志末尾：\n\n```\n" + LOG.read_text(errors="ignore")[-2000:] + "\n```")
+
+# ===== 第 9 格 =====
+CF = COMFY_ROOT / "cloudflared"
+_asset = (
+    "cloudflared-linux-amd64"
+    if platform.machine().lower() in ("x86_64", "amd64")
+    else "cloudflared-linux-arm64"
+)
+if not CF.exists():
+    subprocess.run(
+        [
+            "curl", "-L", "--fail", "-o", str(CF),
+            f"https://github.com/cloudflare/cloudflared/releases/latest/download/{_asset}",
+        ],
+        check=True,
+    )
+    CF.chmod(0o755)
+
+TLOG = COMFY_ROOT / "cloudflared.log"
+# --protocol http2：沙箱常见封 UDP/7844，走 TCP 更稳
+tunnel = subprocess.Popen(
+    [
+        str(CF), "tunnel", "--no-autoupdate", "--protocol", "http2",
+        "--url", COMFY_URL, "--logfile", str(TLOG), "--loglevel", "info",
+    ],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+
+public_url = None
+for _ in range(45):
+    time.sleep(2)
+    _txt = TLOG.read_text(errors="ignore") if TLOG.exists() else ""
+    _m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", _txt)
+    if _m:
+        public_url = _m.group(0)
+        break
+
+if public_url:
+    mo.md(
+        f"""
+### 公网地址
+
+## {public_url}
+
+直接在新标签页打开，就是完整的 ComfyUI 画布（websocket 也走这条隧道）。
+
+- 地址临时有效，重启 notebook 会换一个
+- **没有鉴权**，别发到群里；用完跑最后一个 cell
+- 关了隧道进程，地址立刻失效
+"""
+    )
+else:
+    _tail = TLOG.read_text(errors="ignore")[-1500:] if TLOG.exists() else "（没有日志）"
+    mo.md(
+        f"""
+### 隧道没起来
+
+```
+{_tail}
+```
+
+若出现 `failed to connect to edge` / `timeout`，说明沙箱封了出站 7844。备选：
+
+```bash
+# localhost.run（走 22 端口，沙箱一般不封）
+ssh -o StrictHostKeyChecking=no -R 80:127.0.0.1:8188 nokey@localhost.run
+# bore.pub
+curl -L -o bore https://github.com/ekzhang/bore/releases/latest/download/bore-x86_64-unknown-linux-musl && chmod +x bore
+./bore local 8188 --to bore.pub
+```
+"""
+    )
+
+# ===== 第 10 格 =====
+CKPT = "v1-5-pruned-emaonly.safetensors"
+PROMPT = "a photo of a corgi wearing sunglasses, cinematic lighting"
+NEGATIVE = "blurry, low quality, watermark"
+
+wf = {
+    "3": {"class_type": "KSampler", "inputs": {"seed": 42, "steps": 20, "cfg": 7.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CKPT}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 768, "height": 768, "batch_size": 1}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": PROMPT, "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE, "clip": ["4", 1]}},
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "molab", "images": ["8", 0]}},
+}
+
+def post(path, payload=None):
+    req = urllib.request.Request(
+        f"{COMFY_URL}{path}",
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+_pid = post("/prompt", {"prompt": wf})["prompt_id"]
+_hist = {}
+for _ in range(300):
+    _hist = post(f"/history/{_pid}")
+    if _pid in _hist:
+        break
+    time.sleep(2)
+
+_imgs = _hist.get(_pid, {}).get("outputs", {}).get("9", {}).get("images", [])
+if not _imgs:
+    _have = [p.name for p in (MODELS / "checkpoints").iterdir()] if (MODELS / "checkpoints").exists() else []
+    mo.md(f"没有产出。checkpoint 名字要跟 `models/checkpoints` 里完全一致，现有：{_have}")
+else:
+    _i = _imgs[0]
+    _q = urllib.parse.urlencode({"filename": _i["filename"], "subfolder": _i.get("subfolder", ""), "type": _i.get("type", "output")})
+    _p = MODELS.parent / _i["filename"]
+    _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=60).read())
+    mo.vstack([mo.md(f"`{_p.name}`"), mo.image(str(_p))])
+
+# ===== 第 11 格 =====
+for _p, _n in ((tunnel, "cloudflared"), (proc, "ComfyUI")):
+    if _p is not None and _p.poll() is None:
+        _p.terminate()
+mo.md("已关闭隧道与 ComfyUI 进程（公网地址随即失效）。")
+
