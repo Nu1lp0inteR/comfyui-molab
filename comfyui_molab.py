@@ -474,10 +474,15 @@ def _(COMFY_URL, MODELS, json, mo, time, urllib):
 
 @app.cell
 def _(mo, proc, tunnel):
-    for _p, _n in ((tunnel, "cloudflared"), (proc, "ComfyUI")):
-        if _p is not None and _p.poll() is None:
-            _p.terminate()
-    mo.md("已关闭隧道与 ComfyUI 进程（公网地址随即失效）。")
+    stop = mo.ui.checkbox(label="勾选即停止隧道与 ComfyUI（公网地址随即失效）")
+    if stop.value:
+        for _p, _n in ((tunnel, "cloudflared"), (proc, "ComfyUI")):
+            if _p is not None and _p.poll() is None:
+                _p.terminate()
+        _msg = "已停止隧道与 ComfyUI 进程。要重新启动，回到「启动服务」那格点运行。"
+    else:
+        _msg = "服务运行中。要停止请勾选上面的框。"
+    mo.vstack([stop, mo.md(_msg)])
     return
 
 
