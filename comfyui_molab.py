@@ -33,7 +33,7 @@ def _(mo):
     | **10** | **★ 启动 ComfyUI 服务** | 服务挂了 |
     | **11** | **★★ 生成公网地址（ngrok）** | 地址失效 / 隧道断了 |
     | 12 | 状态检查与排错 | 出问题时 |
-    | 13 | 停止服务（需勾选） | 用完 |
+    | **13 / 14** | **停止服务**（13 是勾选框，14 执行） | 用完 |
 
     ---
 
@@ -479,18 +479,26 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, urllib):
 
 
 @app.cell
-def _(mo, subprocess):
-    # ══════════ 第 13 格 · 停止（必须勾选才生效，避免被"全部运行"误触）══════════
+def _(mo):
+    # ══════════ 第 13 格 · 停止开关（只创建，不读值）══════════
+    # marimo 规定：读取 UIElement 的 .value 不能在创建它的同一格里，
+    # 所以开关和"执行停止"必须拆成两格（13 建、14 用）。
     stop = mo.ui.checkbox(label="勾选即停止 ngrok 隧道与 ComfyUI（公网地址随即失效）")
+    stop
+    return (stop,)
 
+
+@app.cell
+def _(mo, stop, subprocess):
+    # ══════════ 第 14 格 · 执行停止（只有勾选后才会真的杀进程）══════════
     if stop.value:
         subprocess.run(["pkill", "-f", "ngrok"], capture_output=True)
         subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
-        _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。"
+        _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
     else:
-        _msg = "## 第 13 格 · 停止服务\n\n服务运行中，勾选上方复选框才会停止。"
+        _msg = "## 第 14 格 · 停止服务\n\n服务运行中。勾选第 13 格的复选框才会停止。"
 
-    mo.vstack([stop, mo.md(_msg)])
+    mo.md(_msg)
     return
 
 
