@@ -9,7 +9,7 @@
 | 文件 | 用途 |
 |---|---|
 | `comfyui_molab.py` | marimo notebook 源文件，可直接 `marimo edit` 打开，或用 molab 的 GitHub 镜像导入 |
-| `comfyui_粘贴版.txt` | 拆成 11 格的粘贴版，适合在 molab 网页编辑器里逐格粘 |
+| `comfyui_cells.txt` | 拆成 11 格的粘贴版，适合在 molab 网页编辑器里逐格粘 |
 
 ## 用法（molab 里）
 
