@@ -346,6 +346,8 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
         CF.chmod(0o755)
 
     TLOG = COMFY_ROOT / "cloudflared.log"
+    if TLOG.exists():
+        TLOG.unlink()  # 日志是追加写的，先清掉，避免读到上一次的旧地址
     # --protocol http2：沙箱常见封 UDP/7844，走 TCP 更稳
     tunnel = subprocess.Popen(
         [
@@ -360,9 +362,9 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
     for _ in range(45):
         time.sleep(2)
         _txt = TLOG.read_text(errors="ignore") if TLOG.exists() else ""
-        _m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", _txt)
-        if _m:
-            public_url = _m.group(0)
+        _found = re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", _txt)
+        if _found:
+            public_url = _found[-1]  # 取最后一个，才是本次隧道
             break
 
     if public_url:
