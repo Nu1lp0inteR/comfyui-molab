@@ -2,19 +2,18 @@
 setlocal
 cd /d "%~dp0"
 echo ==================================================
-echo   comfyui-molab  -  push to GitHub
+echo   comfyui-molab  -  publish and push
 echo ==================================================
 echo.
-echo Step 1: create the repo on GitHub
-echo   Opening https://github.com/new?name=comfyui-molab ...
+echo Step 1: make sure the repo is PUBLIC
+echo   Opening https://github.com/NullPointeR/comfyui-molab/settings ...
 echo.
-start "" "https://github.com/new?name=comfyui-molab"
-echo   Check these three things on the page:
-echo     - Repository name : comfyui-molab
-echo     - Visibility      : Public
-echo     - "Add a README file" must stay UNCHECKED
+start "" "https://github.com/NullPointeR/comfyui-molab/settings"
+echo   Scroll to the bottom, find "Danger Zone":
+echo     Change repository visibility  -^>  Make public
+echo   If it is already public, just skip this step.
 echo.
-echo   Click "Create repository", then come back here.
+echo   (molab cannot read private repos, so public is required.)
 echo.
 pause
 
@@ -37,8 +36,8 @@ exit /b 0
 :failed
 echo.
 echo Push failed.
-echo   404 / repository not found  -^> the repo was not created yet, or the name differs
-echo   Authentication failed       -^> finish the GitHub login window, then run this again
+echo   repository not found  -^> check the repo name at github.com/NullPointeR?tab=repositories
+echo   Authentication failed -^> finish the GitHub login window, then run this again
 echo.
 echo If the login window never appears, run this once in the same folder:
 echo   git credential-manager github login
