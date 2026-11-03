@@ -133,12 +133,16 @@ def _(mo):
 
     | 你想下什么 | 第二个参数填 |
     |---|---|
-    | 大模型（checkpoint、Flux 全家桶） | `"checkpoints"` |
+    | 大模型（单体 checkpoint） | `"checkpoints"` |
+    | 扩散模型（split-file 的 unet 部分） | `"diffusion_models"` |
     | VAE | `"vae"` |
-    | CLIP / T5 文本编码器 | `"clip"` |
+    | 文本编码器（CLIP / T5 / Qwen） | `"text_encoders"` |
     | LoRA | `"loras"` |
     | ControlNet | `"controlnet"` |
     | 放大模型 | `"upscale_models"` |
+
+    旧版 ComfyUI 里 `diffusion_models` 叫 `unet`、`text_encoders` 叫 `clip`；
+    现在两个名字都认，用哪个都能被识别。
 
     **链接怎么拿**：HuggingFace 模型页 → `Files and versions` → 点你要的文件 →
     右键 `Copy link address`，得到形如
@@ -203,17 +207,27 @@ def _(MODELS, mo, shutil, subprocess, urllib):
     #   dl(URL, "loras", None, {"Cookie": "m_session_id=xxxx"})
 
     DOWNLOADS = [
+        # Anima base v1.0（split-file：扩散模型 / 文本编码器 / VAE 三件套，缺一不可）
         (
-            "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-            "checkpoints",
+            "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors",
+            "diffusion_models",
             None,
         ),
-        # 加模型就照抄一行，改链接和目录：
-        # ("https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors", "checkpoints", None),
+        (
+            "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors",
+            "text_encoders",
+            None,
+        ),
+        (
+            "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors",
+            "vae",
+            None,
+        ),
+        # 想加别的就照抄一行，改链接和目录：
         # ("https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors", "checkpoints", None),
         # ("https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth", "upscale_models", None),
         # 国内源示例（把组织/模型/文件名换成你页面上的实际值）：
-        # ("https://modelscope.cn/models/<组织>/<模型>/resolve/master/<文件名>.safetensors", "checkpoints", None),
+        # ("https://modelscope.cn/models/<组织>/<模型>/resolve/master/<文件名>.safetensors", "diffusion_models", None),
     ]
     # ═══════════════════════════════════════════════
 
@@ -391,19 +405,14 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
 
 @app.cell
 def _(COMFY_URL, MODELS, json, mo, time, urllib):
+    # 这一格是「验证后端能出图」用的，基于单体 checkpoint（SD1.5 那类）。
+    # 默认下载的是 split-file 模型（diffusion_models + text_encoders + vae），
+    # 需要在画布上用 UNETLoader / CLIPLoader / VAELoader 自己搭，所以这里先检查、不硬跑。
     CKPT = "v1-5-pruned-emaonly.safetensors"
     PROMPT = "a photo of a corgi wearing sunglasses, cinematic lighting"
     NEGATIVE = "blurry, low quality, watermark"
 
-    wf = {
-        "3": {"class_type": "KSampler", "inputs": {"seed": 42, "steps": 20, "cfg": 7.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CKPT}},
-        "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 768, "height": 768, "batch_size": 1}},
-        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": PROMPT, "clip": ["4", 1]}},
-        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE, "clip": ["4", 1]}},
-        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "molab", "images": ["8", 0]}},
-    }
+    _ckpt = MODELS / "checkpoints" / CKPT
 
     def post(path, payload=None):
         req = urllib.request.Request(
@@ -414,24 +423,52 @@ def _(COMFY_URL, MODELS, json, mo, time, urllib):
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
 
-    _pid = post("/prompt", {"prompt": wf})["prompt_id"]
-    _hist = {}
-    for _ in range(300):
-        _hist = post(f"/history/{_pid}")
-        if _pid in _hist:
-            break
-        time.sleep(2)
+    if not _ckpt.exists():
+        _dm_dir = MODELS / "diffusion_models"
+        _have = sorted(p.name for p in _dm_dir.iterdir()) if _dm_dir.exists() else []
+        mo.md(
+            f"""
+    ### 跳过 API 出图示例
 
-    _imgs = _hist.get(_pid, {}).get("outputs", {}).get("9", {}).get("images", [])
-    if not _imgs:
-        _have = [p.name for p in (MODELS / "checkpoints").iterdir()] if (MODELS / "checkpoints").exists() else []
-        mo.md(f"没有产出。checkpoint 名字要跟 `models/checkpoints` 里完全一致，现有：{_have}")
+    `models/checkpoints/{CKPT}` 不存在，所以这段基于单体 checkpoint 的示例没跑。
+
+    当前 `models/diffusion_models/` 里：`{_have or "（空）"}`
+
+    split-file 模型要在画布上自己搭：`UNETLoader`（选 diffusion_models）→
+    `CLIPLoader`（选 text_encoders）→ `VAELoader`（选 vae）→ `KSampler` → `VAEDecode` → `SaveImage`。
+
+    搭好之后在画布上用 `Save (API Format)` 导出 JSON，发我，我把这一格改成对应结构。
+    """
+        )
     else:
-        _i = _imgs[0]
-        _q = urllib.parse.urlencode({"filename": _i["filename"], "subfolder": _i.get("subfolder", ""), "type": _i.get("type", "output")})
-        _p = MODELS.parent / _i["filename"]
-        _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=60).read())
-        mo.vstack([mo.md(f"`{_p.name}`"), mo.image(str(_p))])
+        wf = {
+            "3": {"class_type": "KSampler", "inputs": {"seed": 42, "steps": 20, "cfg": 7.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CKPT}},
+            "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 768, "height": 768, "batch_size": 1}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": PROMPT, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE, "clip": ["4", 1]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "molab", "images": ["8", 0]}},
+        }
+
+        _pid = post("/prompt", {"prompt": wf})["prompt_id"]
+        _hist = {}
+        for _ in range(300):
+            _hist = post(f"/history/{_pid}")
+            if _pid in _hist:
+                break
+            time.sleep(2)
+
+        _imgs = _hist.get(_pid, {}).get("outputs", {}).get("9", {}).get("images", [])
+        if not _imgs:
+            _have = [p.name for p in (MODELS / "checkpoints").iterdir()] if (MODELS / "checkpoints").exists() else []
+            mo.md(f"没有产出。checkpoint 名字要跟 `models/checkpoints` 里完全一致，现有：{_have}")
+        else:
+            _i = _imgs[0]
+            _q = urllib.parse.urlencode({"filename": _i["filename"], "subfolder": _i.get("subfolder", ""), "type": _i.get("type", "output")})
+            _p = MODELS.parent / _i["filename"]
+            _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=60).read())
+            mo.vstack([mo.md(f"`{_p.name}`"), mo.image(str(_p))])
     return
 
 
