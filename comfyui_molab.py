@@ -366,8 +366,7 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
             break
 
     if public_url:
-        mo.md(
-            f"""
+        _msg = f"""
     ### 公网地址
 
     ## {public_url}
@@ -375,14 +374,12 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
     直接在新标签页打开，就是完整的 ComfyUI 画布（websocket 也走这条隧道）。
 
     - 地址临时有效，重启 notebook 会换一个
-    - **没有鉴权**，别发到群里；用完跑最后一个 cell
+    - **没有鉴权**，别发到群里；用完勾最后一格的停止框
     - 关了隧道进程，地址立刻失效
     """
-        )
     else:
         _tail = TLOG.read_text(errors="ignore")[-1500:] if TLOG.exists() else "（没有日志）"
-        mo.md(
-            f"""
+        _msg = f"""
     ### 隧道没起来
 
     ```
@@ -399,7 +396,8 @@ def _(COMFY_ROOT, COMFY_URL, mo, platform, re, subprocess, time):
     ./bore local 8188 --to bore.pub
     ```
     """
-        )
+
+    mo.md(_msg)
     return TLOG, public_url, tunnel
 
 
