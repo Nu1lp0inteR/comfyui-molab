@@ -5,46 +5,43 @@ echo ==================================================
 echo   comfyui-molab  -  push to GitHub
 echo ==================================================
 echo.
-echo [1/3] Opening https://github.com/new in your browser...
-start "" https://github.com/new
+echo Step 1: create the repo on GitHub
+echo   Opening https://github.com/new?name=comfyui-molab ...
 echo.
-echo   Repository name : comfyui-molab
-echo   Visibility      : Public
-echo   Do NOT check "Add a README file"
+start "" "https://github.com/new?name=comfyui-molab"
+echo   Check these three things on the page:
+echo     - Repository name : comfyui-molab
+echo     - Visibility      : Public
+echo     - "Add a README file" must stay UNCHECKED
 echo.
-echo Create the repo first, then come back here.
+echo   Click "Create repository", then come back here.
+echo.
 pause
 
-set /p GHUSER=Your GitHub username: 
-if "%GHUSER%"=="" goto :nouser
-
-set "REPOURL=https://github.com/%GHUSER%/comfyui-molab.git"
 echo.
-echo [2/3] Pushing to %REPOURL%
-git remote remove origin >nul 2>&1
-git remote add origin "%REPOURL%"
-git push -u origin main
+echo Step 2: pushing (a browser window will pop up for GitHub login)
+echo.
+git -c credential.helper=manager push -u origin main
 if errorlevel 1 goto :failed
 
 echo.
-echo [3/3] Done. Open the notebook in molab with:
+echo Step 3: done. Open the notebook in molab:
 echo.
-echo   https://molab.marimo.io/github/%GHUSER%/comfyui-molab/blob/main/comfyui_molab.py
+echo   https://molab.marimo.io/github/NullPointeR/comfyui-molab/blob/main/comfyui_molab.py
+echo.
+echo Copy that link into your browser.
 echo.
 pause
 exit /b 0
 
-:nouser
-echo.
-echo Username is required. Nothing was changed.
-pause
-exit /b 1
-
 :failed
 echo.
 echo Push failed.
-echo   - Make sure the repo exists and is named exactly "comfyui-molab"
-echo   - If a login window appeared, finish signing in to GitHub, then run this again
+echo   404 / repository not found  -^> the repo was not created yet, or the name differs
+echo   Authentication failed       -^> finish the GitHub login window, then run this again
+echo.
+echo If the login window never appears, run this once in the same folder:
+echo   git credential-manager github login
 echo.
 pause
 exit /b 1
