@@ -223,6 +223,64 @@ def _(MODELS, mo, shutil, subprocess, urllib):
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## 安装自定义节点（插件）
+
+    在下面的 `NODES` 列表里加仓库地址即可，脚本会 clone 到 `custom_nodes/` 并自动装依赖。
+
+    **装完必须重启 ComfyUI**（否则节点不出现在菜单里），但不要点最后一格（会把隧道一起关掉）。正确姿势：
+
+    ```python
+    subprocess.run(["pkill", "-f", "ComfyUI/main.py"])
+    ```
+
+    然后回到「启动服务」那一格，重新点它的 ▶。隧道进程还在，公网地址不变。
+    """
+    )
+    return
+
+
+@app.cell
+def _(COMFY_DIR, mo, subprocess, sys):
+    NODES = [
+        "https://github.com/ltdrdata/ComfyUI-Manager",
+        # "https://github.com/cubiq/ComfyUI_essentials",
+        # "https://github.com/Fannovel16/comfyui_controlnet_aux",
+        # "https://github.com/kijai/ComfyUI-KJNodes",
+    ]
+
+    def install_node(url):
+        name = url.rstrip("/").split("/")[-1]
+        dest = COMFY_DIR / "custom_nodes" / name
+        if not dest.exists():
+            subprocess.run(["git", "clone", "--depth", "1", url, str(dest)], check=True)
+        req = dest / "requirements.txt"
+        if req.exists():
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+                check=True,
+            )
+        return f"`{name}` 已就绪"
+
+    def install_nodes():
+        out = [install_node(u) for u in NODES]
+        gpu = subprocess.run(
+            [sys.executable, "-c", "import torch;print(torch.cuda.is_available())"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        warn = ""
+        if gpu != "True":
+            warn = "\n\n⚠️ torch CUDA 变成不可用了——多半是某个节点的依赖把 cu128 换成了 CPU 版，重跑安装 ComfyUI 那一格即可恢复。"
+        return mo.md("\n".join(out) + f"\n\ntorch CUDA 可用：`{gpu}`" + warn)
+
+    install_nodes()
+    return (install_nodes,)
+
+
+@app.cell
 def _(COMFY_DIR, COMFY_URL, json, mo, subprocess, sys, time, urllib):
     def _stats():
         try:

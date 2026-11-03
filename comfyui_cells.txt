@@ -1,6 +1,6 @@
 # ComfyUI on molab —— 粘贴版
 # 「===== 第 N 格 =====」之间是一格的完整内容，整段复制粘进 molab 的新单元格。
-# 顺序别乱；一格跑完看结果再跑下一格。第 1 格只 import marimo。
+# 顺序别乱；一格跑完看结果再跑下一格。
 
 # ===== 第 1 格 =====
 import marimo as mo
@@ -188,6 +188,58 @@ _r = [dl(_u, _s, _f) for _u, _s, _f in DOWNLOADS]
 mo.md("\n\n".join(_r))
 
 # ===== 第 8 格 =====
+mo.md(
+    r"""
+## 安装自定义节点（插件）
+
+在下面的 `NODES` 列表里加仓库地址即可，脚本会 clone 到 `custom_nodes/` 并自动装依赖。
+
+**装完必须重启 ComfyUI**（否则节点不出现在菜单里），但不要点最后一格（会把隧道一起关掉）。正确姿势：
+
+```python
+subprocess.run(["pkill", "-f", "ComfyUI/main.py"])
+```
+
+然后回到「启动服务」那一格，重新点它的 ▶。隧道进程还在，公网地址不变。
+"""
+)
+
+# ===== 第 9 格 =====
+NODES = [
+    "https://github.com/ltdrdata/ComfyUI-Manager",
+    # "https://github.com/cubiq/ComfyUI_essentials",
+    # "https://github.com/Fannovel16/comfyui_controlnet_aux",
+    # "https://github.com/kijai/ComfyUI-KJNodes",
+]
+
+def install_node(url):
+    name = url.rstrip("/").split("/")[-1]
+    dest = COMFY_DIR / "custom_nodes" / name
+    if not dest.exists():
+        subprocess.run(["git", "clone", "--depth", "1", url, str(dest)], check=True)
+    req = dest / "requirements.txt"
+    if req.exists():
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+            check=True,
+        )
+    return f"`{name}` 已就绪"
+
+def install_nodes():
+    out = [install_node(u) for u in NODES]
+    gpu = subprocess.run(
+        [sys.executable, "-c", "import torch;print(torch.cuda.is_available())"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    warn = ""
+    if gpu != "True":
+        warn = "\n\n⚠️ torch CUDA 变成不可用了——多半是某个节点的依赖把 cu128 换成了 CPU 版，重跑安装 ComfyUI 那一格即可恢复。"
+    return mo.md("\n".join(out) + f"\n\ntorch CUDA 可用：`{gpu}`" + warn)
+
+install_nodes()
+
+# ===== 第 10 格 =====
 def _stats():
     try:
         with urllib.request.urlopen(f"{COMFY_URL}/system_stats", timeout=2) as r:
@@ -217,7 +269,7 @@ if _s:
 else:
     mo.md("启动失败，日志末尾：\n\n```\n" + LOG.read_text(errors="ignore")[-2000:] + "\n```")
 
-# ===== 第 9 格 =====
+# ===== 第 11 格 =====
 CF = COMFY_ROOT / "cloudflared"
 _asset = (
     "cloudflared-linux-amd64"
@@ -290,7 +342,7 @@ curl -L -o bore https://github.com/ekzhang/bore/releases/latest/download/bore-x8
 """
     )
 
-# ===== 第 10 格 =====
+# ===== 第 12 格 =====
 CKPT = "v1-5-pruned-emaonly.safetensors"
 PROMPT = "a photo of a corgi wearing sunglasses, cinematic lighting"
 NEGATIVE = "blurry, low quality, watermark"
@@ -333,7 +385,7 @@ else:
     _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=60).read())
     mo.vstack([mo.md(f"`{_p.name}`"), mo.image(str(_p))])
 
-# ===== 第 11 格 =====
+# ===== 第 13 格 =====
 for _p, _n in ((tunnel, "cloudflared"), (proc, "ComfyUI")):
     if _p is not None and _p.poll() is None:
         _p.terminate()
