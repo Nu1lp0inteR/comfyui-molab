@@ -252,9 +252,8 @@ def _(MODELS, mo, shutil, subprocess, urllib):
         ("https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors", "diffusion_models", None),
         ("https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders", None),
         ("https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors", "vae", None),
-        # 加别的照抄一行：
-        # ("https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors", "checkpoints", None),
-        # ("https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth", "upscale_models", None),
+        ("https://huggingface.co/ElectronGirl/anima-ref-adapter/resolve/main/anima_ref_adapter_v2_r64.safetensors", "loras", None),
+        ("https://www.modelscope.cn/models/Nu1lp0inteR/ComfyUI-models/resolve/master/4x-AnimeSharp.pth", "upscale_models", None),
     ]
     # ═══════════════════════════════════════════════
 
@@ -286,7 +285,7 @@ def _(COMFY_DIR, mo, subprocess, sys):
     # ══════════════════════ 第 9 格 · 安装自定义节点 ══════════════════════
     NODES = [
         "https://github.com/ltdrdata/ComfyUI-Manager",
-        # "https://github.com/cubiq/ComfyUI_essentials",
+        "https://github.com/ArcAnima/ComfyUI-Anima-Ref-Adapter",
         # "https://github.com/Fannovel16/comfyui_controlnet_aux",
     ]
 
