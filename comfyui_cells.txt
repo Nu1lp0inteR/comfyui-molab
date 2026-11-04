@@ -1,6 +1,4 @@
-# ComfyUI on molab · v2（ngrok 版）—— 粘贴版
-# 「===== 第 N 格 =====」之间是一格的完整内容，整段复制粘进 molab 的一个新单元格。
-# 顺序别乱。
+# ComfyUI on molab · v2（cpolar 版）—— 粘贴版
 
 # ===== 第 1 格 =====
 import marimo as mo
@@ -8,9 +6,9 @@ import marimo as mo
 # ===== 第 2 格 =====
 mo.md(
     r"""
-# ComfyUI on molab · v2（ngrok 版）
+# ComfyUI on molab · v2（cpolar 版）
 
-molab 不暴露端口，所以用 **ngrok** 把容器内的 `127.0.0.1:8188` 映射成公网 https 地址，
+molab 不暴露端口，所以用 **cpolar** 把容器内的 `127.0.0.1:8188` 映射成公网 https 地址，
 浏览器打开就是完整画布。
 
 ---
@@ -24,7 +22,7 @@ molab 不暴露端口，所以用 **ngrok** 把容器内的 `127.0.0.1:8188` 映
 | 7 | 下载模型 | 新会话第一次 |
 | 9 | 安装自定义节点 | 新会话第一次 |
 | **10** | **★ 启动 ComfyUI 服务** | 服务挂了 |
-| **11** | **★★ 生成公网地址（ngrok）** | 地址失效 / 隧道断了 |
+| **11** | **★★ 生成公网地址（cpolar）** | 地址失效 / 隧道断了 |
 | 12 | 状态检查与排错 | 出问题时 |
 | **13 / 14** | **停止服务**（13 是勾选框，14 执行） | 用完 |
 
@@ -315,80 +313,86 @@ else:
 mo.md(_body)
 
 # ===== 第 11 格 =====
-NG = COMFY_ROOT / "ngrok"
-NGLOG = COMFY_ROOT / "ngrok.log"
-NGPID = COMFY_ROOT / "ngrok.pid"
+import re as _re2
 
-if not NG.exists():
-    subprocess.run(
-        ["bash", "-c",
-         f"curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C {COMFY_ROOT}"],
-        check=True,
+CP = COMFY_ROOT / "cpolar"
+CPLOG = COMFY_ROOT / "cpolar.log"
+CPPID = COMFY_ROOT / "cpolar.pid"
+
+if not CP.exists():
+    _zip = COMFY_ROOT / "cpolar.zip"
+    urllib.request.urlretrieve(
+        "https://www.cpolar.com/static/downloads/cpolar-stable-linux-amd64.zip", _zip
     )
-    NG.chmod(0o755)
+    import zipfile as _zipmod
 
-# ⚠️ 只在第一次需要填；跑通后建议清空这一行（molab notebook 公开可读）
-NGROK_TOKEN = ""
+    with _zipmod.ZipFile(_zip) as _z:
+        _z.extractall(COMFY_ROOT)
+    _zip.unlink(missing_ok=True)
+    CP.chmod(0o755)
 
-if NGROK_TOKEN:
-    subprocess.run([str(NG), "config", "add-authtoken", NGROK_TOKEN], capture_output=True)
+# ⚠️ 首次必填，跑通后建议清空（notebook 公开可读）。token 会存进 ~/.cpolar/cpolar.yml
+CPOLAR_TOKEN = ""
 
-def _tunnel():
-    try:
-        _d = json.loads(urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3).read())
-        for _t in _d.get("tunnels", []):
-            if str(_t.get("public_url", "")).startswith("https"):
-                return _t["public_url"]
+if CPOLAR_TOKEN:
+    subprocess.run([str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True)
+
+def _cp_url():
+    if not CPLOG.exists():
         return None
-    except Exception:
-        return None
+    _hits = _re2.findall(
+        r"https://[A-Za-z0-9.\-]*cpolar\.(?:cn|top|io)", CPLOG.read_text(errors="ignore")
+    )
+    return _hits[-1] if _hits else None
 
-_url = _tunnel()
+_alive = subprocess.run(["pgrep", "-f", "cpolar http"], capture_output=True, text=True).stdout.strip()
+_url = _cp_url() if _alive else None
 _new = False
 
 if not _url:
-    subprocess.run(["pkill", "-f", "ngrok"], capture_output=True)
+    subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
     time.sleep(1)
-    if NGLOG.exists():
-        NGLOG.unlink()
-    _fh = open(NGLOG, "w")
-    _pn = subprocess.Popen([str(NG), "http", COMFY_URL, "--log", "stdout"],
-                           stdout=_fh, stderr=subprocess.STDOUT)
-    NGPID.write_text(str(_pn.pid))
+    if CPLOG.exists():
+        CPLOG.unlink()
+    _fh = open(CPLOG, "w")
+    _p = subprocess.Popen([str(CP), "http", "8188"], stdout=_fh, stderr=subprocess.STDOUT)
+    CPPID.write_text(str(_p.pid))
     _new = True
     for _ in range(20):
         time.sleep(2)
-        _url = _tunnel()
+        _url = _cp_url()
         if _url:
             break
 
 if _url:
     _body = (
-        "## 第 11 格 · 公网地址\n\n"
+        "## 第 11 格 · 公网地址（cpolar）\n\n"
         f"# {_url}\n\n"
         "浏览器打开就是完整的 ComfyUI 画布。\n\n"
         "| 说明 | 内容 |\n|---|---|\n"
-        "| 首次打开 | 会出现 ngrok 蓝色提示页，点一次 `Visit Site`，之后不再出现 |\n"
-        "| 有效期 | 进程活着就一直有效；重启会换新地址 |\n"
-        "| 安全 | **无鉴权**，拿到链接的人都能用你的卡，别外传 |\n"
+        "| 带宽 | 免费版 **1 Mbps**，首屏要 40–80 秒，属正常 |\n"
+        "| 域名 | 随机域名，**24 小时内会变** |\n"
+        "| 安全 | 无鉴权，别外传 |\n"
         f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n\n"
-        "⚠️ 前提是第 10 格显示「服务已就绪」，否则打开会 502。"
+        "前提是第 10 格显示「服务已就绪」，否则会 502。\n\n"
+        "**提速**：ComfyUI 设置里把 `Preview Method` 改成 `None`，能省掉大量预览图流量。"
     )
 else:
-    _tail = NGLOG.read_text(errors="ignore")[-1200:] if NGLOG.exists() else "（无日志）"
+    _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志）"
     _body = (
         "## 第 11 格 · 隧道没建起来\n\n"
         f"```\n{_tail}\n```\n\n"
         "对照排查：\n"
-        "- `ERR_NGROK_4018` / authentication failed → token 没填或填错，"
-        "去 https://dashboard.ngrok.com/get-started/your-authtoken 复制后填进 `NGROK_TOKEN`\n"
-        "- `ERR_NGROK_108` → 免费账号同时只能 1 个 agent，等 30 秒重跑本格\n"
-        "- 其余情况 → 先跑第 10 格确认 ComfyUI 起来了"
+        "- 提示 `authtoken` 相关 → 把 token 填进 `CPOLAR_TOKEN` 再跑一次\n"
+        "- `connection refused` / `timeout` → 连不上 cpolar 服务端，检查容器能否访问 cpolar.com\n"
+        "- 端口占用 → 先跑第 13 格停止，再试"
     )
 
 mo.md(_body)
 
 # ===== 第 12 格 =====
+import re as _re3
+
 def _comfy():
     try:
         with urllib.request.urlopen(f"{COMFY_URL}/system_stats", timeout=2) as _r:
@@ -396,37 +400,36 @@ def _comfy():
     except Exception:
         return None
 
-def _tunnels():
-    try:
-        _d = json.loads(urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=3).read())
-        return [t["public_url"] for t in _d.get("tunnels", [])]
-    except Exception:
-        return []
-
 _up = _comfy()
-_urls = _tunnels()
-_first = _urls[0] if _urls else "❌ 无 → 跑第 11 格"
+_procs = subprocess.run(["pgrep", "-af", "cpolar"], capture_output=True, text=True).stdout.strip()
+_cplog = COMFY_ROOT / "cpolar.log"
+_hits = (
+    _re3.findall(r"https://[A-Za-z0-9.\-]*cpolar\.(?:cn|top|io)", _cplog.read_text(errors="ignore"))
+    if _cplog.exists()
+    else []
+)
+_url = _hits[-1] if _hits else "❌ 无 → 跑第 11 格"
 _comfy_log = COMFY_DIR.parent / "comfyui.log"
-_ng_log = COMFY_ROOT / "ngrok.log"
 _tail = _comfy_log.read_text(errors="ignore")[-800:] if _comfy_log.exists() else "（还没有日志）"
 
 mo.md(
     "## 第 12 格 · 状态检查\n\n"
     "| 检查项 | 结果 |\n|---|---|\n"
     f"| ComfyUI | {'✅ 运行中' if _up else '❌ 未运行 → 跑第 10 格'} |\n"
-    f"| 公网地址 | {_first} |\n"
-    f"| 日志位置 | `{_comfy_log}` / `{_ng_log}` |\n\n"
+    f"| cpolar 进程 | {'✅ 在跑' if _procs else '❌ 没在跑 → 跑第 11 格'} |\n"
+    f"| 公网地址 | {_url} |\n"
+    f"| 日志位置 | `{_comfy_log}` / `{_cplog}` |\n\n"
     "**ComfyUI 日志末尾：**\n\n"
     f"```\n{_tail}\n```"
 )
 
 # ===== 第 13 格 =====
-stop = mo.ui.checkbox(label="勾选即停止 ngrok 隧道与 ComfyUI（公网地址随即失效）")
+stop = mo.ui.checkbox(label="勾选即停止 cpolar 隧道与 ComfyUI（公网地址随即失效）")
 stop
 
 # ===== 第 14 格 =====
 if stop.value:
-    subprocess.run(["pkill", "-f", "ngrok"], capture_output=True)
+    subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
     subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
     _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
 else:
