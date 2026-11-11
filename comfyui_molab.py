@@ -416,23 +416,36 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
     _url = _cp_url() if _alive else None
     _new = False
 
+    # ══ 地区：cpolar 免费账号有地区限制，按顺序试，哪个能建就用哪个 ══
+    # 容器在海外，优先试 us / ap，再试 hk / cn
+    REGIONS = ["us", "ap", "hk", "cn"]
+    _used_region = None
+
     if not _url and not _tok_problem:
-        subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
-        time.sleep(1)
-        if CPLOG.exists():
-            CPLOG.unlink()
-        _fh = open(CPLOG, "w")
-        # -log=stdout 让 cpolar 把日志打到标准输出，否则会写到别处、日志文件是空的
-        _p = subprocess.Popen(
-            [str(CP), "http", "8188", "-log=stdout"],
-            stdout=_fh, stderr=subprocess.STDOUT,
-        )
-        CPPID.write_text(str(_p.pid))
-        _new = True
-        for _ in range(20):
-            time.sleep(2)
-            _url = _cp_url()
+        for _reg in REGIONS:
+            subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
+            time.sleep(1)
+            if CPLOG.exists():
+                CPLOG.unlink()
+            _fh = open(CPLOG, "w")
+            # -log=stdout 让日志落到文件；-region 指定接入地区
+            _p = subprocess.Popen(
+                [str(CP), "http", "8188", "-region=" + _reg, "-log=stdout"],
+                stdout=_fh, stderr=subprocess.STDOUT,
+            )
+            CPPID.write_text(str(_p.pid))
+            _new = True
+            _url = None
+            for _ in range(10):
+                time.sleep(2)
+                _url = _cp_url()
+                if _url:
+                    break
+                _txt = CPLOG.read_text(errors="ignore") if CPLOG.exists() else ""
+                if "failed to allocate tunnel" in _txt or "不在用户允许范围内" in _txt:
+                    break  # 这个地区不行，换下一个
             if _url:
+                _used_region = _reg
                 break
 
     if _url:
@@ -444,7 +457,8 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
             "| 带宽 | 免费版 **1 Mbps**，首屏要 40–80 秒，属正常 |\n"
             "| 域名 | 随机域名，**24 小时内会变** |\n"
             "| 安全 | 无鉴权，别外传 |\n"
-            f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n\n"
+            f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n"
+            f"| 接入地区 | {_used_region or '（复用，未重连）'} |\n\n"
             "前提是第 10 格显示「服务已就绪」，否则会 502。\n\n"
             "**提速**：ComfyUI 设置里把 `Preview Method` 改成 `None`，能省掉大量预览图流量。"
         )
