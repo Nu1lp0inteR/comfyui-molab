@@ -1,4 +1,4 @@
-# ComfyUI on molab · v2（cpolar + API 出图）—— 粘贴版
+# ComfyUI on molab · v2 —— 粘贴版（17 格）
 
 # ===== 第 1 格 =====
 import marimo as mo
@@ -26,6 +26,7 @@ molab 不暴露端口，所以用 **cpolar** 把容器内的 `127.0.0.1:8188` �
 | **12** | **API 出图（不用开画布）** | 换提示词/参数 |
 | 13 | 状态检查与排错 | 出问题时 |
 | **14 / 15** | **停止服务**（14 勾选框，15 执行） | 用完 |
+| **16 / 17** | **图片管理**（16 列出 + 勾选，17 删除） | 清理输出 |
 
 ---
 
@@ -568,6 +569,58 @@ if stop.value:
     _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
 else:
     _msg = "## 第 15 格 · 停止服务\n\n服务运行中。勾选第 14 格的复选框才会停止。"
+
+mo.md(_msg)
+
+# ===== 第 16 格 =====
+OUT = COMFY_DIR / "output"
+_files = (
+    sorted((p for p in OUT.glob("*") if p.is_file()),
+           key=lambda p: p.stat().st_mtime, reverse=True)
+    if OUT.exists() else []
+)
+_total_mb = sum(p.stat().st_size for p in _files) / 2**20
+
+if _files:
+    _rows = "\n".join(
+        f"| {p.name} | {p.stat().st_size / 1024:.0f} KB | "
+        f"{time.strftime('%m-%d %H:%M', time.localtime(p.stat().st_mtime))} |"
+        for p in _files[:15]
+    )
+    _more = f"\n\n> 只列最近 15 个，共 {len(_files)} 个。" if len(_files) > 15 else ""
+    _table = f"| 文件名 | 大小 | 时间 |\n|---|---|---|\n{_rows}{_more}"
+else:
+    _table = "（目录是空的）"
+
+clear_images = mo.ui.checkbox(label="勾选后，到第 17 格执行删除（删掉全部图片，不可恢复）")
+
+mo.vstack([
+    mo.md(
+        "## 第 16 格 · 图片管理\n\n"
+        f"**目录**：`{OUT}`\n\n"
+        f"**共 {len(_files)} 个文件，合计 {_total_mb:.1f} MB**\n\n"
+        f"{_table}\n\n"
+        "> molab 的文件面板看不到这个目录（它在 notebook 目录之外），"
+        "只能通过格子操作。想下载单张图，用第 12 格出图后那张 `mo.image` 右键另存。"
+    ),
+    clear_images,
+])
+
+# ===== 第 17 格 =====
+if clear_images.value:
+    _n = 0
+    _freed = 0
+    for _p in OUT.glob("*"):
+        if _p.is_file():
+            _freed += _p.stat().st_size
+            _p.unlink()
+            _n += 1
+    _msg = (
+        f"## 已清空\n\n删除 {_n} 个文件，释放 {_freed / 2**20:.1f} MB。\n\n"
+        "别忘了把第 16 格的勾去掉，否则下次跑任何格都会重新删一次。"
+    )
+else:
+    _msg = "## 第 17 格 · 清空图片\n\n目录里还有文件。勾选第 16 格的复选框才会执行删除。"
 
 mo.md(_msg)
 
