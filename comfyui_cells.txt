@@ -1,4 +1,4 @@
-# ComfyUI on molab · v2（cpolar 版）—— 粘贴版
+# ComfyUI on molab · v2（cpolar + API 出图）—— 粘贴版
 
 # ===== 第 1 格 =====
 import marimo as mo
@@ -23,8 +23,9 @@ molab 不暴露端口，所以用 **cpolar** 把容器内的 `127.0.0.1:8188` �
 | 9 | 安装自定义节点 | 新会话第一次 |
 | **10** | **★ 启动 ComfyUI 服务** | 服务挂了 |
 | **11** | **★★ 生成公网地址（cpolar）** | 地址失效 / 隧道断了 |
-| 12 | 状态检查与排错 | 出问题时 |
-| **13 / 14** | **停止服务**（13 是勾选框，14 执行） | 用完 |
+| **12** | **API 出图（不用开画布）** | 换提示词/参数 |
+| 13 | 状态检查与排错 | 出问题时 |
+| **14 / 15** | **停止服务**（14 勾选框，15 执行） | 用完 |
 
 ---
 
@@ -282,7 +283,8 @@ _started = False
 if _stats is None:
     _log = open(COMFY_DIR.parent / "comfyui.log", "w")
     _p = subprocess.Popen(
-        [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188"],
+        [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188",
+         "--preview-size", "256"],
         cwd=str(COMFY_DIR), stdout=_log, stderr=subprocess.STDOUT,
     )
     PIDFILE.write_text(str(_p.pid))
@@ -333,8 +335,22 @@ if not CP.exists():
 # ⚠️ 首次必填，跑通后建议清空（notebook 公开可读）。token 会存进 ~/.cpolar/cpolar.yml
 CPOLAR_TOKEN = ""
 
+_tok_problem = None
 if CPOLAR_TOKEN:
-    subprocess.run([str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True)
+    _tok = subprocess.run(
+        [str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True, text=True
+    )
+    _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
+    if _tok.returncode != 0:
+        _tok_problem = f"authtoken 命令失败（返回码 {_tok.returncode}）：\n" + (
+            _tok.stdout + _tok.stderr
+        ).strip()[:400]
+    elif not _cfgdir.exists():
+        _tok_problem = "authtoken 命令返回成功，但 ~/.cpolar 目录没生成，配置没写进去"
+else:
+    _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
+    if not _cfgdir.exists():
+        _tok_problem = "CPOLAR_TOKEN 为空，且容器里没有已保存的 token（~/.cpolar 不存在）"
 
 def _cp_url():
     if not CPLOG.exists():
@@ -348,19 +364,36 @@ _alive = subprocess.run(["pgrep", "-f", "cpolar http"], capture_output=True, tex
 _url = _cp_url() if _alive else None
 _new = False
 
-if not _url:
-    subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
-    time.sleep(1)
-    if CPLOG.exists():
-        CPLOG.unlink()
-    _fh = open(CPLOG, "w")
-    _p = subprocess.Popen([str(CP), "http", "8188"], stdout=_fh, stderr=subprocess.STDOUT)
-    CPPID.write_text(str(_p.pid))
-    _new = True
-    for _ in range(20):
-        time.sleep(2)
-        _url = _cp_url()
+# ══ 地区：账号只允许中国区（实测 us/ap/hk 全部报"不在用户允许范围内"）══
+# 你的账号若换了限制，可以改这里，多个地区按顺序试
+REGIONS = ["cn"]
+_used_region = None
+
+if not _url and not _tok_problem:
+    for _reg in REGIONS:
+        subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
+        time.sleep(1)
+        if CPLOG.exists():
+            CPLOG.unlink()
+        _fh = open(CPLOG, "w")
+        # -log=stdout 让日志落到文件；-region 指定接入地区
+        _p = subprocess.Popen(
+            [str(CP), "http", "8188", "-region=" + _reg, "-log=stdout"],
+            stdout=_fh, stderr=subprocess.STDOUT,
+        )
+        CPPID.write_text(str(_p.pid))
+        _new = True
+        _url = None
+        for _ in range(10):
+            time.sleep(2)
+            _url = _cp_url()
+            if _url:
+                break
+            _txt = CPLOG.read_text(errors="ignore") if CPLOG.exists() else ""
+            if "failed to allocate tunnel" in _txt or "不在用户允许范围内" in _txt:
+                break  # 这个地区不行，换下一个
         if _url:
+            _used_region = _reg
             break
 
 if _url:
@@ -372,17 +405,21 @@ if _url:
         "| 带宽 | 免费版 **1 Mbps**，首屏要 40–80 秒，属正常 |\n"
         "| 域名 | 随机域名，**24 小时内会变** |\n"
         "| 安全 | 无鉴权，别外传 |\n"
-        f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n\n"
+        f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n"
+        f"| 接入地区 | {_used_region or '（复用，未重连）'} |\n\n"
         "前提是第 10 格显示「服务已就绪」，否则会 502。\n\n"
-        "**提速**：ComfyUI 设置里把 `Preview Method` 改成 `None`，能省掉大量预览图流量。"
+        "**预览图提速（重要）**：ComfyUI 设置里把 `Preview Method` 改成 `Latent`——能看到采样过程，但流量只有几 KB/步；`None` 完全没预览，`TAESD`/`VAE` 会让 1Mbps 直接卡死。"
     )
 else:
-    _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志）"
+    _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志，进程可能没输出就退出了）"
+    _tok_part = f"\n### ⚠️ token 有问题\n\n```\n{_tok_problem}\n```\n" if _tok_problem else ""
     _body = (
         "## 第 11 格 · 隧道没建起来\n\n"
+        f"{_tok_part}\n"
+        "**进程日志：**\n\n"
         f"```\n{_tail}\n```\n\n"
         "对照排查：\n"
-        "- 提示 `authtoken` 相关 → 把 token 填进 `CPOLAR_TOKEN` 再跑一次\n"
+        "- 提示 `authtoken` 相关 → token 失效或填错，去 cpolar 后台重新复制（重置过就要用新的）\n"
         "- `connection refused` / `timeout` → 连不上 cpolar 服务端，检查容器能否访问 cpolar.com\n"
         "- 端口占用 → 先跑第 13 格停止，再试"
     )
@@ -390,6 +427,104 @@ else:
 mo.md(_body)
 
 # ===== 第 12 格 =====
+W, H = 1024, 1536
+SEED = 123456789
+STEPS = 18
+CFG = 4.0
+SAMPLER = "sa_solver_pece"   # 若报 "Value not in list"，改成 "euler"
+SCHEDULER = "sgm_uniform"
+UNET = "anima-base-v1.0.safetensors"
+CLIP_NAME = "qwen_3_06b_base.safetensors"
+VAE_NAME = "qwen_image_vae.safetensors"
+
+POS = (
+    "masterpiece,best quality,highres,score_9,year 2025, newest,\n"
+    "film grain,(@mellozzo:1.1),@mizikayo,(@eluthel,@zhenli-mari:0.95),, "
+    "yuuka \(pajamas\) \(blue archive\), 1girl, arm support, bare shoulders, "
+    "blue pajamas, blue shirt, blue shorts, blush, cleavage, clothes pull, halo, "
+    "indoors, long hair, looking at viewer, navel, official alternate costume, "
+    "pajamas, purple hair, shirt, shorts, shorts pull, sitting, sleepy, solo, "
+    "squeans, straight hair, strap gap, thighs, very long hair"
+)
+NEG = (
+    "eformed hands, bad anatomy, extra limbs, mutated, extra eyes, bad proportions, "
+    "character doll, old, early, artist collaboration, lowres, artistic error, "
+    "bad perspective, too many watermarks, (ai-generated:2), artist name, "
+    "twitter username, watermark"
+)
+
+wf = {
+    "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
+    "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5}},
+    "3": {"class_type": "RescaleCFG", "inputs": {"model": ["2", 0], "multiplier": 0.7}},
+    "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}},
+    "5": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": POS}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": NEG}},
+    "8": {"class_type": "EmptyLatentImage", "inputs": {"width": W, "height": H, "batch_size": 1}},
+    "9": {"class_type": "KSamplerAdvanced", "inputs": {
+        "model": ["3", 0], "positive": ["6", 0], "negative": ["7", 0],
+        "latent_image": ["8", 0], "add_noise": "enable", "noise_seed": SEED,
+        "steps": STEPS, "cfg": CFG, "sampler_name": SAMPLER, "scheduler": SCHEDULER,
+        "start_at_step": 0, "end_at_step": 10000, "return_with_leftover_noise": "disable"}},
+    "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["5", 0]}},
+    "11": {"class_type": "SaveImage", "inputs": {"images": ["10", 0], "filename_prefix": "molab"}},
+}
+
+def _post(_path, _payload=None):
+    _req = urllib.request.Request(
+        f"{COMFY_URL}{_path}",
+        data=None if _payload is None else json.dumps(_payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(_req, timeout=60) as _r:
+        return json.loads(_r.read())
+
+_out = None
+_t0 = time.time()
+try:
+    _pid = _post("/prompt", {"prompt": wf})["prompt_id"]
+    _hist = {}
+    for _ in range(600):
+        _hist = _post(f"/history/{_pid}")
+        if _pid in _hist:
+            break
+        time.sleep(2)
+    _imgs = _hist.get(_pid, {}).get("outputs", {}).get("11", {}).get("images", [])
+    if not _imgs:
+        _out = mo.md("## 第 12 格 · 没有产出\n\n任务提交成功但没拿到图。检查 ComfyUI 日志（第 13 格有日志末尾）。")
+    else:
+        _i = _imgs[0]
+        _q = urllib.parse.urlencode({
+            "filename": _i["filename"],
+            "subfolder": _i.get("subfolder", ""),
+            "type": _i.get("type", "output"),
+        })
+        _p = COMFY_DIR / "output" / _i["filename"]
+        _p.parent.mkdir(parents=True, exist_ok=True)
+        _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
+        _out = mo.vstack([
+            mo.md(f"## 第 12 格 · 出图完成\n\n`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒"),
+            mo.image(str(_p)),
+        ])
+except Exception as _e:
+    _detail = ""
+    try:
+        _detail = _e.read().decode("utf-8", "ignore")[:1200]
+    except Exception:
+        pass
+    _out = mo.md(
+        "## 第 12 格 · 提交失败\n\n"
+        f"```\n{_e}\n{_detail}\n```\n\n"
+        "常见原因：\n"
+        "- `Value not in list: sampler_name` → 把 `SAMPLER` 改成 `euler`\n"
+        "- `Value not in list: clip_name / unet_name / vae_name` → 文件名和 models/ 里的不一致\n"
+        "- `Cannot connect to host` → ComfyUI 没启动，先跑第 10 格"
+    )
+
+_out
+
+# ===== 第 13 格 =====
 import re as _re3
 
 def _comfy():
@@ -412,7 +547,7 @@ _comfy_log = COMFY_DIR.parent / "comfyui.log"
 _tail = _comfy_log.read_text(errors="ignore")[-800:] if _comfy_log.exists() else "（还没有日志）"
 
 mo.md(
-    "## 第 12 格 · 状态检查\n\n"
+    "## 第 13 格 · 状态检查\n\n"
     "| 检查项 | 结果 |\n|---|---|\n"
     f"| ComfyUI | {'✅ 运行中' if _up else '❌ 未运行 → 跑第 10 格'} |\n"
     f"| cpolar 进程 | {'✅ 在跑' if _procs else '❌ 没在跑 → 跑第 11 格'} |\n"
@@ -422,17 +557,17 @@ mo.md(
     f"```\n{_tail}\n```"
 )
 
-# ===== 第 13 格 =====
+# ===== 第 14 格 =====
 stop = mo.ui.checkbox(label="勾选即停止 cpolar 隧道与 ComfyUI（公网地址随即失效）")
 stop
 
-# ===== 第 14 格 =====
+# ===== 第 15 格 =====
 if stop.value:
     subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
     subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
     _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
 else:
-    _msg = "## 第 14 格 · 停止服务\n\n服务运行中。勾选第 13 格的复选框才会停止。"
+    _msg = "## 第 15 格 · 停止服务\n\n服务运行中。勾选第 14 格的复选框才会停止。"
 
 mo.md(_msg)
 

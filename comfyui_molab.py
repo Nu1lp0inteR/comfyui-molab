@@ -32,8 +32,9 @@ def _(mo):
     | 9 | 安装自定义节点 | 新会话第一次 |
     | **10** | **★ 启动 ComfyUI 服务** | 服务挂了 |
     | **11** | **★★ 生成公网地址（cpolar）** | 地址失效 / 隧道断了 |
-    | 12 | 状态检查与排错 | 出问题时 |
-    | **13 / 14** | **停止服务**（13 是勾选框，14 执行） | 用完 |
+    | **12** | **API 出图（不用开画布）** | 换提示词/参数 |
+    | 13 | 状态检查与排错 | 出问题时 |
+    | **14 / 15** | **停止服务**（14 勾选框，15 执行） | 用完 |
 
     ---
 
@@ -482,8 +483,115 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
 
 
 @app.cell
+def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
+    # ═════════════ 第 12 格 · API 出图（不用打开画布）═════════════
+    # 由你导出的 UI 工作流转写。已剥掉 bypass(mode=4) 节点：
+    #   IP-Adapter 515/516/517、UltimateSDUpscale 500/502、CFG-ZeroStar 293、
+    #   以及 Set/Get/Join/Fast Bypasser 等纯 UI 辅助节点
+    # 只保留 comfy-core 节点，不依赖任何自定义节点（SageAttention 值为 disabled，也已去掉）
+
+    W, H = 1024, 1536
+    SEED = 123456789
+    STEPS = 18
+    CFG = 4.0
+    SAMPLER = "sa_solver_pece"   # 若报 "Value not in list"，改成 "euler"
+    SCHEDULER = "sgm_uniform"
+    UNET = "anima-base-v1.0.safetensors"
+    CLIP_NAME = "qwen_3_06b_base.safetensors"
+    VAE_NAME = "qwen_image_vae.safetensors"
+
+    POS = (
+        "masterpiece,best quality,highres,score_9,year 2025, newest,\n"
+        "film grain,(@mellozzo:1.1),@mizikayo,(@eluthel,@zhenli-mari:0.95),, "
+        "yuuka \(pajamas\) \(blue archive\), 1girl, arm support, bare shoulders, "
+        "blue pajamas, blue shirt, blue shorts, blush, cleavage, clothes pull, halo, "
+        "indoors, long hair, looking at viewer, navel, official alternate costume, "
+        "pajamas, purple hair, shirt, shorts, shorts pull, sitting, sleepy, solo, "
+        "squeans, straight hair, strap gap, thighs, very long hair"
+    )
+    NEG = (
+        "eformed hands, bad anatomy, extra limbs, mutated, extra eyes, bad proportions, "
+        "character doll, old, early, artist collaboration, lowres, artistic error, "
+        "bad perspective, too many watermarks, (ai-generated:2), artist name, "
+        "twitter username, watermark"
+    )
+
+    wf = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
+        "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5}},
+        "3": {"class_type": "RescaleCFG", "inputs": {"model": ["2", 0], "multiplier": 0.7}},
+        "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}},
+        "5": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": POS}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": NEG}},
+        "8": {"class_type": "EmptyLatentImage", "inputs": {"width": W, "height": H, "batch_size": 1}},
+        "9": {"class_type": "KSamplerAdvanced", "inputs": {
+            "model": ["3", 0], "positive": ["6", 0], "negative": ["7", 0],
+            "latent_image": ["8", 0], "add_noise": "enable", "noise_seed": SEED,
+            "steps": STEPS, "cfg": CFG, "sampler_name": SAMPLER, "scheduler": SCHEDULER,
+            "start_at_step": 0, "end_at_step": 10000, "return_with_leftover_noise": "disable"}},
+        "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["5", 0]}},
+        "11": {"class_type": "SaveImage", "inputs": {"images": ["10", 0], "filename_prefix": "molab"}},
+    }
+
+    def _post(_path, _payload=None):
+        _req = urllib.request.Request(
+            f"{COMFY_URL}{_path}",
+            data=None if _payload is None else json.dumps(_payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(_req, timeout=60) as _r:
+            return json.loads(_r.read())
+
+    _out = None
+    _t0 = time.time()
+    try:
+        _pid = _post("/prompt", {"prompt": wf})["prompt_id"]
+        _hist = {}
+        for _ in range(600):
+            _hist = _post(f"/history/{_pid}")
+            if _pid in _hist:
+                break
+            time.sleep(2)
+        _imgs = _hist.get(_pid, {}).get("outputs", {}).get("11", {}).get("images", [])
+        if not _imgs:
+            _out = mo.md("## 第 12 格 · 没有产出\n\n任务提交成功但没拿到图。检查 ComfyUI 日志（第 13 格有日志末尾）。")
+        else:
+            _i = _imgs[0]
+            _q = urllib.parse.urlencode({
+                "filename": _i["filename"],
+                "subfolder": _i.get("subfolder", ""),
+                "type": _i.get("type", "output"),
+            })
+            _p = COMFY_DIR / "output" / _i["filename"]
+            _p.parent.mkdir(parents=True, exist_ok=True)
+            _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
+            _out = mo.vstack([
+                mo.md(f"## 第 12 格 · 出图完成\n\n`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒"),
+                mo.image(str(_p)),
+            ])
+    except Exception as _e:
+        _detail = ""
+        try:
+            _detail = _e.read().decode("utf-8", "ignore")[:1200]
+        except Exception:
+            pass
+        _out = mo.md(
+            "## 第 12 格 · 提交失败\n\n"
+            f"```\n{_e}\n{_detail}\n```\n\n"
+            "常见原因：\n"
+            "- `Value not in list: sampler_name` → 把 `SAMPLER` 改成 `euler`\n"
+            "- `Value not in list: clip_name / unet_name / vae_name` → 文件名和 models/ 里的不一致\n"
+            "- `Cannot connect to host` → ComfyUI 没启动，先跑第 10 格"
+        )
+
+    _out
+    return
+
+
+@app.cell
 def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
-    # ═══════════════════ 第 12 格 · 状态检查 / 排错 ═══════════════════
+    # ═══════════════════ 第 13 格 · 状态检查 / 排错 ═══════════════════
     import re as _re3
 
     def _comfy():
@@ -506,7 +614,7 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
     _tail = _comfy_log.read_text(errors="ignore")[-800:] if _comfy_log.exists() else "（还没有日志）"
 
     mo.md(
-        "## 第 12 格 · 状态检查\n\n"
+        "## 第 13 格 · 状态检查\n\n"
         "| 检查项 | 结果 |\n|---|---|\n"
         f"| ComfyUI | {'✅ 运行中' if _up else '❌ 未运行 → 跑第 10 格'} |\n"
         f"| cpolar 进程 | {'✅ 在跑' if _procs else '❌ 没在跑 → 跑第 11 格'} |\n"
@@ -520,7 +628,7 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
 
 @app.cell
 def _(mo):
-    # ══════════ 第 13 格 · 停止开关（只创建，不读值）══════════
+    # ══════════ 第 14 格 · 停止开关（只创建，不读值）══════════
     # marimo 规定：读取 UIElement 的 .value 不能在创建它的同一格里，
     # 所以开关和"执行停止"必须拆成两格（13 建、14 用）。
     stop = mo.ui.checkbox(label="勾选即停止 cpolar 隧道与 ComfyUI（公网地址随即失效）")
@@ -530,13 +638,13 @@ def _(mo):
 
 @app.cell
 def _(mo, stop, subprocess):
-    # ══════════ 第 14 格 · 执行停止（只有勾选后才会真的杀进程）══════════
+    # ══════════ 第 15 格 · 执行停止（只有勾选后才会真的杀进程）══════════
     if stop.value:
         subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
         subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
         _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
     else:
-        _msg = "## 第 14 格 · 停止服务\n\n服务运行中。勾选第 13 格的复选框才会停止。"
+        _msg = "## 第 15 格 · 停止服务\n\n服务运行中。勾选第 14 格的复选框才会停止。"
 
     mo.md(_msg)
     return
