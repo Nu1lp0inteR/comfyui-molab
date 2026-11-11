@@ -414,7 +414,7 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
 
     wf = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
-        "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5}},
+        "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5, "sampling": "flow"}},
         "3": {"class_type": "RescaleCFG", "inputs": {"model": ["2", 0], "multiplier": 0.7}},
         "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": CLIP_NAME, "type": "stable_diffusion", "device": "default"}},
         "5": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
@@ -467,18 +467,39 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
                 mo.image(str(_p)),
             ])
     except Exception as _e:
-        _detail = ""
+        # ComfyUI 的 400 响应体里，"node_errors" 才是真正的错误原因，
+        # 外层 error.message 只有一句 "Prompt outputs failed validation"。
+        _raw = ""
         try:
-            _detail = _e.read().decode("utf-8", "ignore")[:1200]
+            _raw = _e.read().decode("utf-8", "ignore")
         except Exception:
             pass
+
+        _lines = []
+        try:
+            _body = json.loads(_raw)
+            for _nid, _ne in (_body.get("node_errors") or {}).items():
+                _ct = _ne.get("class_type", "?")
+                for _it in _ne.get("errors", []):
+                    _lines.append(
+                        f"- **节点 {_nid}** (`{_ct}`)：{_it.get('message')}"
+                        + (f"\n  - 细节：{_it.get('details')}" if _it.get("details") else "")
+                    )
+        except Exception:
+            pass
+
+        if not _lines:
+            _lines = ["（没能解析出 node_errors，原始响应见下方）"]
+
         _out = mo.md(
             "## 第 11 格 · 提交失败\n\n"
-            f"```\n{_e}\n{_detail}\n```\n\n"
-            "常见原因：\n"
+            + "\n".join(_lines)
+            + "\n\n**常见原因对照**：\n"
             "- `Value not in list: sampler_name` → 把 `SAMPLER` 改成 `euler`\n"
-            "- `Value not in list: clip_name / unet_name / vae_name` → 文件名和 models/ 里的不一致\n"
-            "- `Cannot connect to host` → ComfyUI 没启动，先跑第 10 格"
+            "- `Required input is missing` → 该节点有新的必填参数，把 `details` 里的名字告诉我\n"
+            "- `Value not in list: unet_name / clip_name / vae_name` → 文件名和 `models/` 里的不一致\n"
+            "- `Cannot connect to host` → ComfyUI 没启动，先跑第 10 格\n\n"
+            f"```\n{_e}\n{_raw[:2000]}\n```"
         )
 
     _out
