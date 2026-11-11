@@ -331,7 +331,8 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, sys, time, urllib)
     if _stats is None:
         _log = open(COMFY_DIR.parent / "comfyui.log", "w")
         _p = subprocess.Popen(
-            [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188"],
+            [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188",
+             "--preview-size", "256"],
             cwd=str(COMFY_DIR), stdout=_log, stderr=subprocess.STDOUT,
         )
         PIDFILE.write_text(str(_p.pid))
@@ -416,9 +417,9 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
     _url = _cp_url() if _alive else None
     _new = False
 
-    # ══ 地区：cpolar 免费账号有地区限制，按顺序试，哪个能建就用哪个 ══
-    # 容器在海外，优先试 us / ap，再试 hk / cn
-    REGIONS = ["us", "ap", "hk", "cn"]
+    # ══ 地区：账号只允许中国区（实测 us/ap/hk 全部报"不在用户允许范围内"）══
+    # 你的账号若换了限制，可以改这里，多个地区按顺序试
+    REGIONS = ["cn"]
     _used_region = None
 
     if not _url and not _tok_problem:
@@ -460,7 +461,7 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
             f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n"
             f"| 接入地区 | {_used_region or '（复用，未重连）'} |\n\n"
             "前提是第 10 格显示「服务已就绪」，否则会 502。\n\n"
-            "**提速**：ComfyUI 设置里把 `Preview Method` 改成 `None`，能省掉大量预览图流量。"
+            "**预览图提速（重要）**：ComfyUI 设置里把 `Preview Method` 改成 `Latent`——能看到采样过程，但流量只有几 KB/步；`None` 完全没预览，`TAESD`/`VAE` 会让 1Mbps 直接卡死。"
         )
     else:
         _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志，进程可能没输出就退出了）"
