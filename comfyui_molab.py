@@ -470,13 +470,18 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             _p = COMFY_DIR / "output" / _i["filename"]
             _p.parent.mkdir(parents=True, exist_ok=True)
             _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
+            # 按高度缩放，避免竖图铺满宽度后要上下拖动
+            _view_h = 560
+            _view_w = int(W * min(1.0, _view_h / H))
             _out = mo.vstack([
                 mo.md(
                     f"## 第 11 格 · 出图完成\n\n"
-                    f"`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒\n\n"
+                    f"`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒 · "
+                    f"{W}×{H}\n\n"
                     f"**种子 {_used_seed}** —— 想复现这一张，把 `SEED` 改成这个数字再跑。"
                 ),
-                mo.image(str(_p)),
+                mo.image(str(_p), width=_view_w),
+                mo.download(_p.read_bytes(), filename=_p.name, label="⬇ 下载原图（1024×1536 全尺寸）"),
             ])
     except Exception as _e:
         # ComfyUI 的 400 响应体里，"node_errors" 才是真正的错误原因，
