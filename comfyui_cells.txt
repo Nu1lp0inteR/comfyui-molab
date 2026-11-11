@@ -355,12 +355,7 @@ MASK_BLUR, TILE_PAD = 64, 128
 
 POS = (
     "masterpiece,best quality,highres,score_9,year 2025, newest,\n"
-    "film grain,(@mellozzo:1.1),@mizikayo,(@eluthel,@zhenli-mari:0.95),, "
-    "yuuka \(pajamas\) \(blue archive\), 1girl, arm support, bare shoulders, "
-    "blue pajamas, blue shirt, blue shorts, blush, cleavage, clothes pull, halo, "
-    "indoors, long hair, looking at viewer, navel, official alternate costume, "
-    "pajamas, purple hair, shirt, shorts, shorts pull, sitting, sleepy, solo, "
-    "squeans, straight hair, strap gap, thighs, very long hair"
+    "film grain,"
 )
 NEG = (
     "eformed hands, bad anatomy, extra limbs, mutated, extra eyes, bad proportions, "
