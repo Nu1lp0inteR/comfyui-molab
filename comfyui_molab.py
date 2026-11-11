@@ -15,14 +15,16 @@ def _():
 def _(mo):
     mo.md(
         r"""
-    # ComfyUI on molab · v2（cpolar 版）
+    # ComfyUI on molab · API 出图版
 
-    molab 不暴露端口，所以用 **cpolar** 把容器内的 `127.0.0.1:8188` 映射成公网 https 地址，
-    浏览器打开就是完整画布。
+    全程在容器内完成：ComfyUI 跑在 `127.0.0.1:8188`，notebook 直接调 HTTP API 提交工作流，
+    生成的图存进 `~/comfy/ComfyUI/output/` 并显示在格子里。
+
+    **不需要开画布，不需要任何隧道**，所以没有带宽瓶颈，也不受域名/cookie 那堆麻烦影响。
 
     ---
 
-    ## 每格干什么、什么时候重跑
+    ## 每格干什么
 
     | 格 | 内容 | 什么时候重跑 |
     |---|---|---|
@@ -31,11 +33,10 @@ def _(mo):
     | 7 | 下载模型 | 新会话第一次 |
     | 9 | 安装自定义节点 | 新会话第一次 |
     | **10** | **★ 启动 ComfyUI 服务** | 服务挂了 |
-    | **11** | **★★ 生成公网地址（cpolar）** | 地址失效 / 隧道断了 |
-    | **12** | **API 出图（不用开画布）** | 换提示词/参数 |
-    | 13 | 状态检查与排错 | 出问题时 |
-    | **14 / 15** | **停止服务**（14 勾选框，15 执行） | 用完 |
-    | **16 / 17** | **图片管理**（16 列出 + 勾选，17 删除） | 清理输出 |
+    | **11** | **★★ API 出图** | 换提示词 / 参数 |
+    | **12 / 13** | **图片管理**（12 列出 + 勾选，13 删除） | 清理输出目录 |
+    | 14 | 状态检查与排错 | 出问题时 |
+    | **15 / 16** | **停止服务**（15 勾选框，16 执行） | 用完 |
 
     ---
 
@@ -43,12 +44,24 @@ def _(mo):
 
     | 情况 | 从哪开始 |
     |---|---|
-    | 服务或隧道进程挂了，notebook 还开着 | **只跑第 10 格，再跑第 11 格** |
+    | 服务进程挂了，notebook 还开着 | **只跑第 10 格**，然后第 11 格出图 |
     | 改了模型列表 | 只跑第 7 格（已下好的会自动跳过） |
     | 加了新的自定义节点 | 跑第 9 格 → 再跑第 10 格（重启才生效） |
-    | 容器被回收 / 换了会话 / 隔天再用 | **从第 1 格重来**，之前的安装和模型全部消失 |
+    | 想清理生成的图片 | 第 12 格看清单 → 勾选 → 第 13 格删除 |
+    | 容器被回收 / 换会话 / 隔天 | **从第 1 格重来**，安装和模型全部消失 |
 
     > 拿不准就先跑第 4 格，看「当前状态」那一栏。
+
+    ### 如果哪天还是想看画布
+
+    这台容器不暴露端口，必须靠内网穿透。实测可用的只有 cpolar，且**必须 `-region=cn`**
+    （免费账号只允许中国区，`us`/`ap`/`hk` 全部报"不在用户允许范围内"）。
+    免费版 1 Mbps、域名 24 小时变一次，首屏要几分钟。相关命令和踩坑记录见仓库 README。
+
+    ### 浏览器 403 但 curl 200？
+
+    免费隧道会在根域名下发状态 cookie，换子域或重启隧道后旧 cookie 失效 → 边缘直接回 403。
+    开无痕窗口能打开就说明是这个问题，清掉该域名的 cookie 即可。
     """
     )
     return
@@ -355,7 +368,7 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, sys, time, urllib)
             f"| VRAM | {_dev.get('vram_total', 0) / 2**30:.0f} GB |\n"
             f"| 本次 | {'刚刚拉起' if _started else '本来就在跑'} |\n"
             f"| PID | `{PIDFILE.read_text().strip() if PIDFILE.exists() else '-'}` |\n\n"
-            "→ **下一步：跑第 11 格拿公网地址。**"
+            "→ **下一步：跑第 11 格出图。**"
         )
     else:
         _tail = (COMFY_DIR.parent / "comfyui.log").read_text(errors="ignore")[-1500:]
@@ -366,126 +379,8 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, sys, time, urllib)
 
 
 @app.cell
-def _(COMFY_ROOT, mo, subprocess, time, urllib):
-    # ═══════════ 第 11 格 · ★★ 生成公网地址（cpolar）═══════════
-    # 幂等：隧道已在跑就复用现有地址，不会起第二个进程。
-    import re as _re2
-
-    CP = COMFY_ROOT / "cpolar"
-    CPLOG = COMFY_ROOT / "cpolar.log"
-    CPPID = COMFY_ROOT / "cpolar.pid"
-
-    if not CP.exists():
-        _zip = COMFY_ROOT / "cpolar.zip"
-        urllib.request.urlretrieve(
-            "https://www.cpolar.com/static/downloads/cpolar-stable-linux-amd64.zip", _zip
-        )
-        import zipfile as _zipmod
-
-        with _zipmod.ZipFile(_zip) as _z:
-            _z.extractall(COMFY_ROOT)
-        _zip.unlink(missing_ok=True)
-        CP.chmod(0o755)
-
-    # ⚠️ 首次必填，跑通后建议清空（notebook 公开可读）。token 会存进 ~/.cpolar/cpolar.yml
-    CPOLAR_TOKEN = ""
-
-    _tok_problem = None
-    if CPOLAR_TOKEN:
-        _tok = subprocess.run(
-            [str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True, text=True
-        )
-        _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
-        if _tok.returncode != 0:
-            _tok_problem = f"authtoken 命令失败（返回码 {_tok.returncode}）：\n" + (
-                _tok.stdout + _tok.stderr
-            ).strip()[:400]
-        elif not _cfgdir.exists():
-            _tok_problem = "authtoken 命令返回成功，但 ~/.cpolar 目录没生成，配置没写进去"
-    else:
-        _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
-        if not _cfgdir.exists():
-            _tok_problem = "CPOLAR_TOKEN 为空，且容器里没有已保存的 token（~/.cpolar 不存在）"
-
-    def _cp_url():
-        if not CPLOG.exists():
-            return None
-        _hits = _re2.findall(
-            r"https://[A-Za-z0-9.\-]*cpolar\.(?:cn|top|io)", CPLOG.read_text(errors="ignore")
-        )
-        return _hits[-1] if _hits else None
-
-    _alive = subprocess.run(["pgrep", "-f", "cpolar http"], capture_output=True, text=True).stdout.strip()
-    _url = _cp_url() if _alive else None
-    _new = False
-
-    # ══ 地区：账号只允许中国区（实测 us/ap/hk 全部报"不在用户允许范围内"）══
-    # 你的账号若换了限制，可以改这里，多个地区按顺序试
-    REGIONS = ["cn"]
-    _used_region = None
-
-    if not _url and not _tok_problem:
-        for _reg in REGIONS:
-            subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
-            time.sleep(1)
-            if CPLOG.exists():
-                CPLOG.unlink()
-            _fh = open(CPLOG, "w")
-            # -log=stdout 让日志落到文件；-region 指定接入地区
-            _p = subprocess.Popen(
-                [str(CP), "http", "8188", "-region=" + _reg, "-log=stdout"],
-                stdout=_fh, stderr=subprocess.STDOUT,
-            )
-            CPPID.write_text(str(_p.pid))
-            _new = True
-            _url = None
-            for _ in range(10):
-                time.sleep(2)
-                _url = _cp_url()
-                if _url:
-                    break
-                _txt = CPLOG.read_text(errors="ignore") if CPLOG.exists() else ""
-                if "failed to allocate tunnel" in _txt or "不在用户允许范围内" in _txt:
-                    break  # 这个地区不行，换下一个
-            if _url:
-                _used_region = _reg
-                break
-
-    if _url:
-        _body = (
-            "## 第 11 格 · 公网地址（cpolar）\n\n"
-            f"# {_url}\n\n"
-            "浏览器打开就是完整的 ComfyUI 画布。\n\n"
-            "| 说明 | 内容 |\n|---|---|\n"
-            "| 带宽 | 免费版 **1 Mbps**，首屏要 40–80 秒，属正常 |\n"
-            "| 域名 | 随机域名，**24 小时内会变** |\n"
-            "| 安全 | 无鉴权，别外传 |\n"
-            f"| 本次 | {'新建立' if _new else '复用已有隧道'} |\n"
-            f"| 接入地区 | {_used_region or '（复用，未重连）'} |\n\n"
-            "前提是第 10 格显示「服务已就绪」，否则会 502。\n\n"
-            "**预览图提速（重要）**：ComfyUI 设置里把 `Preview Method` 改成 `Latent`——能看到采样过程，但流量只有几 KB/步；`None` 完全没预览，`TAESD`/`VAE` 会让 1Mbps 直接卡死。"
-        )
-    else:
-        _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志，进程可能没输出就退出了）"
-        _tok_part = f"\n### ⚠️ token 有问题\n\n```\n{_tok_problem}\n```\n" if _tok_problem else ""
-        _body = (
-            "## 第 11 格 · 隧道没建起来\n\n"
-            f"{_tok_part}\n"
-            "**进程日志：**\n\n"
-            f"```\n{_tail}\n```\n\n"
-            "对照排查：\n"
-            "- 提示 `authtoken` 相关 → token 失效或填错，去 cpolar 后台重新复制（重置过就要用新的）\n"
-            "- `connection refused` / `timeout` → 连不上 cpolar 服务端，检查容器能否访问 cpolar.com\n"
-            "- 端口占用 → 先跑第 13 格停止，再试"
-        )
-
-    mo.md(_body)
-    return
-
-
-@app.cell
 def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
-    # ═════════════ 第 12 格 · API 出图（不用打开画布）═════════════
+    # ═════════════ 第 11 格 · API 出图（不用打开画布）═════════════
     # 由你导出的 UI 工作流转写。已剥掉 bypass(mode=4) 节点：
     #   IP-Adapter 515/516/517、UltimateSDUpscale 500/502、CFG-ZeroStar 293、
     #   以及 Set/Get/Join/Fast Bypasser 等纯 UI 辅助节点
@@ -556,7 +451,7 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             time.sleep(2)
         _imgs = _hist.get(_pid, {}).get("outputs", {}).get("11", {}).get("images", [])
         if not _imgs:
-            _out = mo.md("## 第 12 格 · 没有产出\n\n任务提交成功但没拿到图。检查 ComfyUI 日志（第 13 格有日志末尾）。")
+            _out = mo.md("## 第 11 格 · 没有产出\n\n任务提交成功但没拿到图。检查 ComfyUI 日志（第 14 格有日志末尾）。")
         else:
             _i = _imgs[0]
             _q = urllib.parse.urlencode({
@@ -568,7 +463,7 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             _p.parent.mkdir(parents=True, exist_ok=True)
             _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
             _out = mo.vstack([
-                mo.md(f"## 第 12 格 · 出图完成\n\n`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒"),
+                mo.md(f"## 第 11 格 · 出图完成\n\n`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒"),
                 mo.image(str(_p)),
             ])
     except Exception as _e:
@@ -578,7 +473,7 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
         except Exception:
             pass
         _out = mo.md(
-            "## 第 12 格 · 提交失败\n\n"
+            "## 第 11 格 · 提交失败\n\n"
             f"```\n{_e}\n{_detail}\n```\n\n"
             "常见原因：\n"
             "- `Value not in list: sampler_name` → 把 `SAMPLER` 改成 `euler`\n"
@@ -591,8 +486,68 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
 
 
 @app.cell
+def _(COMFY_DIR, mo, time):
+    # ═══════════ 第 12 格 · 图片管理（列出 output 目录）═══════════
+    OUT = COMFY_DIR / "output"
+    _files = (
+        sorted((p for p in OUT.glob("*") if p.is_file()),
+               key=lambda p: p.stat().st_mtime, reverse=True)
+        if OUT.exists() else []
+    )
+    _total_mb = sum(p.stat().st_size for p in _files) / 2**20
+
+    if _files:
+        _rows = "\n".join(
+            f"| {p.name} | {p.stat().st_size / 1024:.0f} KB | "
+            f"{time.strftime('%m-%d %H:%M', time.localtime(p.stat().st_mtime))} |"
+            for p in _files[:15]
+        )
+        _more = f"\n\n> 只列最近 15 个，共 {len(_files)} 个。" if len(_files) > 15 else ""
+        _table = f"| 文件名 | 大小 | 时间 |\n|---|---|---|\n{_rows}{_more}"
+    else:
+        _table = "（目录是空的）"
+
+    clear_images = mo.ui.checkbox(label="勾选后，到第 13 格执行删除（删掉全部图片，不可恢复）")
+
+    mo.vstack([
+        mo.md(
+            "## 第 12 格 · 图片管理\n\n"
+            f"**目录**：`{OUT}`\n\n"
+            f"**共 {len(_files)} 个文件，合计 {_total_mb:.1f} MB**\n\n"
+            f"{_table}\n\n"
+            "> molab 的文件面板看不到这个目录（它在 notebook 目录之外），"
+            "只能通过格子操作。想下载单张图，用第 11 格出图后那张 `mo.image` 右键另存。"
+        ),
+        clear_images,
+    ])
+    return OUT, clear_images
+
+
+@app.cell
+def _(OUT, clear_images, mo):
+    # ═══════════ 第 13 格 · 清空图片（必须勾选才执行）═══════════
+    if clear_images.value:
+        _n = 0
+        _freed = 0
+        for _p in OUT.glob("*"):
+            if _p.is_file():
+                _freed += _p.stat().st_size
+                _p.unlink()
+                _n += 1
+        _msg = (
+            f"## 已清空\n\n删除 {_n} 个文件，释放 {_freed / 2**20:.1f} MB。\n\n"
+            "别忘了把第 12 格的勾去掉，否则下次跑任何格都会重新删一次。"
+        )
+    else:
+        _msg = "## 第 13 格 · 清空图片\n\n目录里还有文件。勾选第 12 格的复选框才会执行删除。"
+
+    mo.md(_msg)
+    return
+
+
+@app.cell
 def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
-    # ═══════════════════ 第 13 格 · 状态检查 / 排错 ═══════════════════
+    # ═══════════════════ 第 14 格 · 状态检查 / 排错 ═══════════════════
     import re as _re3
 
     def _comfy():
@@ -615,7 +570,7 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
     _tail = _comfy_log.read_text(errors="ignore")[-800:] if _comfy_log.exists() else "（还没有日志）"
 
     mo.md(
-        "## 第 13 格 · 状态检查\n\n"
+        "## 第 14 格 · 状态检查\n\n"
         "| 检查项 | 结果 |\n|---|---|\n"
         f"| ComfyUI | {'✅ 运行中' if _up else '❌ 未运行 → 跑第 10 格'} |\n"
         f"| cpolar 进程 | {'✅ 在跑' if _procs else '❌ 没在跑 → 跑第 11 格'} |\n"
@@ -629,86 +584,27 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, urllib):
 
 @app.cell
 def _(mo):
-    # ══════════ 第 14 格 · 停止开关（只创建，不读值）══════════
+    # ══════════ 第 15 格 · 停止开关（只创建，不读值）══════════
     # marimo 规定：读取 UIElement 的 .value 不能在创建它的同一格里，
     # 所以开关和"执行停止"必须拆成两格（13 建、14 用）。
-    stop = mo.ui.checkbox(label="勾选即停止 cpolar 隧道与 ComfyUI（公网地址随即失效）")
+    stop = mo.ui.checkbox(label="勾选即停止 ComfyUI（服务退出，输出目录里的图不受影响）")
     stop
     return (stop,)
 
 
 @app.cell
 def _(mo, stop, subprocess):
-    # ══════════ 第 15 格 · 执行停止（只有勾选后才会真的杀进程）══════════
+    # ══════════ 第 16 格 · 执行停止（只有勾选后才会真的杀进程）══════════
     if stop.value:
-        subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
         subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
-        _msg = "## 已停止\n\n隧道与 ComfyUI 都已退出。要恢复：先跑第 10 格，再跑第 11 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
+        _msg = "## 已停止\n\nComfyUI 已退出。要恢复：跑第 10 格。\n\n（把上面的勾去掉，本格会显示为「运行中」，但进程不会自动重启）"
     else:
-        _msg = "## 第 15 格 · 停止服务\n\n服务运行中。勾选第 14 格的复选框才会停止。"
+        _msg = "## 第 16 格 · 停止服务\n\n服务运行中。勾选第 15 格的复选框才会停止。"
 
     mo.md(_msg)
     return
 
 
-@app.cell
-def _(COMFY_DIR, mo, time):
-    # ═══════════ 第 16 格 · 图片管理（列出 output 目录）═══════════
-    OUT = COMFY_DIR / "output"
-    _files = (
-        sorted((p for p in OUT.glob("*") if p.is_file()),
-               key=lambda p: p.stat().st_mtime, reverse=True)
-        if OUT.exists() else []
-    )
-    _total_mb = sum(p.stat().st_size for p in _files) / 2**20
-
-    if _files:
-        _rows = "\n".join(
-            f"| {p.name} | {p.stat().st_size / 1024:.0f} KB | "
-            f"{time.strftime('%m-%d %H:%M', time.localtime(p.stat().st_mtime))} |"
-            for p in _files[:15]
-        )
-        _more = f"\n\n> 只列最近 15 个，共 {len(_files)} 个。" if len(_files) > 15 else ""
-        _table = f"| 文件名 | 大小 | 时间 |\n|---|---|---|\n{_rows}{_more}"
-    else:
-        _table = "（目录是空的）"
-
-    clear_images = mo.ui.checkbox(label="勾选后，到第 17 格执行删除（删掉全部图片，不可恢复）")
-
-    mo.vstack([
-        mo.md(
-            "## 第 16 格 · 图片管理\n\n"
-            f"**目录**：`{OUT}`\n\n"
-            f"**共 {len(_files)} 个文件，合计 {_total_mb:.1f} MB**\n\n"
-            f"{_table}\n\n"
-            "> molab 的文件面板看不到这个目录（它在 notebook 目录之外），"
-            "只能通过格子操作。想下载单张图，用第 12 格出图后那张 `mo.image` 右键另存。"
-        ),
-        clear_images,
-    ])
-    return OUT, clear_images
-
-
-@app.cell
-def _(OUT, clear_images, mo):
-    # ═══════════ 第 17 格 · 清空图片（必须勾选才执行）═══════════
-    if clear_images.value:
-        _n = 0
-        _freed = 0
-        for _p in OUT.glob("*"):
-            if _p.is_file():
-                _freed += _p.stat().st_size
-                _p.unlink()
-                _n += 1
-        _msg = (
-            f"## 已清空\n\n删除 {_n} 个文件，释放 {_freed / 2**20:.1f} MB。\n\n"
-            "别忘了把第 16 格的勾去掉，否则下次跑任何格都会重新删一次。"
-        )
-    else:
-        _msg = "## 第 17 格 · 清空图片\n\n目录里还有文件。勾选第 16 格的复选框才会执行删除。"
-
-    mo.md(_msg)
-    return
 
 
 if __name__ == "__main__":
