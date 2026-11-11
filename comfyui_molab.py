@@ -387,8 +387,22 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
     # ⚠️ 首次必填，跑通后建议清空（notebook 公开可读）。token 会存进 ~/.cpolar/cpolar.yml
     CPOLAR_TOKEN = ""
 
+    _tok_problem = None
     if CPOLAR_TOKEN:
-        subprocess.run([str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True)
+        _tok = subprocess.run(
+            [str(CP), "authtoken", CPOLAR_TOKEN], capture_output=True, text=True
+        )
+        _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
+        if _tok.returncode != 0:
+            _tok_problem = f"authtoken 命令失败（返回码 {_tok.returncode}）：\n" + (
+                _tok.stdout + _tok.stderr
+            ).strip()[:400]
+        elif not _cfgdir.exists():
+            _tok_problem = "authtoken 命令返回成功，但 ~/.cpolar 目录没生成，配置没写进去"
+    else:
+        _cfgdir = __import__("pathlib").Path.home() / ".cpolar"
+        if not _cfgdir.exists():
+            _tok_problem = "CPOLAR_TOKEN 为空，且容器里没有已保存的 token（~/.cpolar 不存在）"
 
     def _cp_url():
         if not CPLOG.exists():
@@ -402,13 +416,17 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
     _url = _cp_url() if _alive else None
     _new = False
 
-    if not _url:
+    if not _url and not _tok_problem:
         subprocess.run(["pkill", "-f", "cpolar"], capture_output=True)
         time.sleep(1)
         if CPLOG.exists():
             CPLOG.unlink()
         _fh = open(CPLOG, "w")
-        _p = subprocess.Popen([str(CP), "http", "8188"], stdout=_fh, stderr=subprocess.STDOUT)
+        # -log=stdout 让 cpolar 把日志打到标准输出，否则会写到别处、日志文件是空的
+        _p = subprocess.Popen(
+            [str(CP), "http", "8188", "-log=stdout"],
+            stdout=_fh, stderr=subprocess.STDOUT,
+        )
         CPPID.write_text(str(_p.pid))
         _new = True
         for _ in range(20):
@@ -431,12 +449,15 @@ def _(COMFY_ROOT, mo, subprocess, time, urllib):
             "**提速**：ComfyUI 设置里把 `Preview Method` 改成 `None`，能省掉大量预览图流量。"
         )
     else:
-        _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志）"
+        _tail = CPLOG.read_text(errors="ignore")[-1200:] if CPLOG.exists() else "（无日志，进程可能没输出就退出了）"
+        _tok_part = f"\n### ⚠️ token 有问题\n\n```\n{_tok_problem}\n```\n" if _tok_problem else ""
         _body = (
             "## 第 11 格 · 隧道没建起来\n\n"
+            f"{_tok_part}\n"
+            "**进程日志：**\n\n"
             f"```\n{_tail}\n```\n\n"
             "对照排查：\n"
-            "- 提示 `authtoken` 相关 → 把 token 填进 `CPOLAR_TOKEN` 再跑一次\n"
+            "- 提示 `authtoken` 相关 → token 失效或填错，去 cpolar 后台重新复制（重置过就要用新的）\n"
             "- `connection refused` / `timeout` → 连不上 cpolar 服务端，检查容器能否访问 cpolar.com\n"
             "- 端口占用 → 先跑第 13 格停止，再试"
         )
