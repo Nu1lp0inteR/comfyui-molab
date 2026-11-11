@@ -301,6 +301,7 @@ def _(COMFY_DIR, mo, subprocess, sys):
     NODES = [
         "https://github.com/ltdrdata/ComfyUI-Manager",
         "https://github.com/ArcAnima/ComfyUI-Anima-Ref-Adapter",
+        "https://github.com/ssitu/ComfyUI_UltimateSDUpscale",
         # "https://github.com/Fannovel16/comfyui_controlnet_aux",
     ]
 
@@ -380,16 +381,17 @@ def _(COMFY_DIR, COMFY_ROOT, COMFY_URL, json, mo, subprocess, sys, time, urllib)
 
 @app.cell
 def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
-    # ═════════════ 第 11 格 · API 出图（不用打开画布）═════════════
-    # 由你导出的 UI 工作流转写。已剥掉 bypass(mode=4) 节点：
-    #   IP-Adapter 515/516/517、UltimateSDUpscale 500/502、CFG-ZeroStar 293、
-    #   以及 Set/Get/Join/Fast Bypasser 等纯 UI 辅助节点
-    # 只保留 comfy-core 节点，不依赖任何自定义节点（SageAttention 值为 disabled，也已去掉）
+    # ═════════════ 第 11 格 · API 出图（含高清放大）═════════════
+    # 按执行顺序还原：
+    #   UNETLoader → ModelSamplingAuraFlow → RescaleCFG
+    #   → KSamplerAdvanced → VAEDecode → [UltimateSDUpscale 分块重绘] → SaveImage
+    # 放大这组对应 UI 里你 bypass 的 500/502 两个节点；
+    # 其中 GetImageSize + MathExpression + Set/Get 算 tile 的一串已改成直接用 W/H，
+    # 省掉 4 个辅助节点（它们只负责把宽高除以 1 传给 tile_width/tile_height）。
+    # 仍剥掉的：IP-Adapter 515/516/517、CFG-ZeroStar 293、Fast Bypasser、JoinString。
 
     W, H = 1024, 1536
-    # SEED = -1 → 每次运行随机（等价于界面里 Seed 节点填 -1 再点 randomize）
-    # SEED ≥ 0 → 固定种子，可复现同一张图
-    # 注意：API 不接受 -1，下面会把它换成真正的随机整数
+    # SEED = -1 → 每次运行随机；SEED ≥ 0 → 固定种子可复现（API 不接受 -1，下面会换掉）
     SEED = -1
     STEPS = 18
     CFG = 4.0
@@ -398,6 +400,19 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
     UNET = "anima-base-v1.0.safetensors"
     CLIP_NAME = "qwen_3_06b_base.safetensors"
     VAE_NAME = "qwen_image_vae.safetensors"
+
+    # ────────── 高清放大（原 workflow 里 bypass 的那组）──────────
+    UPSCALE = True                       # False = 只出基础图
+    UPSCALE_MODEL = "4x-AnimeSharp.pth"  # models/upscale_models/ 下的文件名
+    UPSCALE_BY = 2.0                     # 1024×1536 → 2048×3072
+    UP_STEPS = 5                         # 放大阶段重绘步数（原 workflow 就是 5）
+    UP_CFG = 1.0
+    UP_DENOISE = 0.28                    # 越低越贴原图，越高越"重画"
+    UP_SAMPLER = "euler_cfg_pp"          # 若报 "Value not in list"，改成 "euler"
+    UP_SCHEDULER = "sgm_uniform"
+    UP_MODE = "Chess"                    # Chess / Linear / None
+    TILE_W, TILE_H = W, H                # 2 倍图按 2×2 切成 4 块
+    MASK_BLUR, TILE_PAD = 64, 128
 
     POS = (
         "masterpiece,best quality,highres,score_9,year 2025, newest,\n"
@@ -420,6 +435,26 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
 
     _used_seed = SEED if SEED >= 0 else _random.randint(0, 2**53)
 
+    # 放大前置检查：缺节点 / 缺模型时自动降级，而不是抛一个看不懂的报错
+    def _has_node(_name):
+        try:
+            with urllib.request.urlopen(f"{COMFY_URL}/object_info/{_name}", timeout=10) as _r:
+                return bool(json.loads(_r.read()))
+        except Exception:
+            return False
+
+    _up_note = ""
+    if UPSCALE and not _has_node("UltimateSDUpscale"):
+        UPSCALE = False
+        _up_note = (
+            "⚠️ 容器里没有 `UltimateSDUpscale` 节点，本次只出基础图。\n\n"
+            "装法：第 9 格的 `NODES` 里加 `https://github.com/ssitu/ComfyUI_UltimateSDUpscale`，"
+            "跑第 9 格，再跑第 10 格重启服务。"
+        )
+    elif UPSCALE and not (COMFY_DIR / "models" / "upscale_models" / UPSCALE_MODEL).exists():
+        UPSCALE = False
+        _up_note = f"⚠️ 没找到 `models/upscale_models/{UPSCALE_MODEL}`，本次只出基础图。"
+
     wf = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
         "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5, "sampling": "flow"}},
@@ -435,8 +470,43 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             "steps": STEPS, "cfg": CFG, "sampler_name": SAMPLER, "scheduler": SCHEDULER,
             "start_at_step": 0, "end_at_step": 10000, "return_with_leftover_noise": "disable"}},
         "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["5", 0]}},
-        "11": {"class_type": "SaveImage", "inputs": {"images": ["10", 0], "filename_prefix": "molab"}},
+        # 基础图存一份，方便跟放大版对比
+        "11": {"class_type": "SaveImage", "inputs": {"images": ["10", 0], "filename_prefix": "molab_base"}},
     }
+
+    if UPSCALE:
+        wf["12"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": UPSCALE_MODEL}}
+        wf["13"] = {"class_type": "UltimateSDUpscale", "inputs": {
+            "image": ["10", 0],
+            "model": ["3", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "vae": ["5", 0],
+            "upscale_model": ["12", 0],
+            "upscale_by": UPSCALE_BY,
+            "seed": _used_seed,
+            "steps": UP_STEPS,
+            "cfg": UP_CFG,
+            "sampler_name": UP_SAMPLER,
+            "scheduler": UP_SCHEDULER,
+            "denoise": UP_DENOISE,
+            "mode_type": UP_MODE,
+            "tile_width": TILE_W,
+            "tile_height": TILE_H,
+            "mask_blur": MASK_BLUR,
+            "tile_padding": TILE_PAD,
+            "seam_fix_mode": "None",
+            "seam_fix_denoise": 1.0,
+            "seam_fix_width": 64,
+            "seam_fix_mask_blur": 8,
+            "seam_fix_padding": 16,
+            "force_uniform_tiles": True,
+            "tiled_decode": False,
+        }}
+        wf["14"] = {"class_type": "SaveImage", "inputs": {"images": ["13", 0], "filename_prefix": "molab_up"}}
+        _final_key = "14"
+    else:
+        _final_key = "11"
 
     def _post(_path, _payload=None):
         _req = urllib.request.Request(
@@ -452,12 +522,18 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
     try:
         _pid = _post("/prompt", {"prompt": wf})["prompt_id"]
         _hist = {}
-        for _ in range(600):
+        for _ in range(900):          # 放大更慢，上限放宽到 30 分钟
             _hist = _post(f"/history/{_pid}")
             if _pid in _hist:
                 break
             time.sleep(2)
-        _imgs = _hist.get(_pid, {}).get("outputs", {}).get("11", {}).get("images", [])
+
+        _outs = (_hist.get(_pid) or {}).get("outputs", {})
+        _imgs = (_outs.get(_final_key) or {}).get("images", [])
+        if not _imgs:   # 兜底：取最后一个 output 类型的图
+            _all = [i for _v in _outs.values() for i in _v.get("images", []) if i.get("type") == "output"]
+            _imgs = _all[-1:]
+
         if not _imgs:
             _out = mo.md("## 第 11 格 · 没有产出\n\n任务提交成功但没拿到图。检查 ComfyUI 日志（第 14 格有日志末尾）。")
         else:
@@ -469,20 +545,27 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             })
             _p = COMFY_DIR / "output" / _i["filename"]
             _p.parent.mkdir(parents=True, exist_ok=True)
-            _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
-            # 按高度缩放，避免竖图铺满宽度后要上下拖动
-            _view_h = 560
-            _view_w = int(W * min(1.0, _view_h / H))
-            _out = mo.vstack([
-                mo.md(
-                    f"## 第 11 格 · 出图完成\n\n"
-                    f"`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒 · "
-                    f"{W}×{H}\n\n"
-                    f"**种子 {_used_seed}** —— 想复现这一张，把 `SEED` 改成这个数字再跑。"
-                ),
-                mo.image(str(_p), width=_view_w),
-                mo.download(_p.read_bytes(), filename=_p.name, label="⬇ 下载原图（1024×1536 全尺寸）"),
-            ])
+            _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=300).read())
+
+            _fw = int(W * (UPSCALE_BY if UPSCALE else 1))
+            _fh = int(H * (UPSCALE_BY if UPSCALE else 1))
+            _view_w = int(_fw * min(1.0, 560 / _fh))
+            _tag = f"放大 ×{UPSCALE_BY:g}" if UPSCALE else "未放大"
+
+            _parts = []
+            if _up_note:
+                _parts.append(mo.md(_up_note))
+            _parts.append(mo.md(
+                f"## 第 11 格 · 出图完成\n\n"
+                f"`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒\n\n"
+                f"{_fw}×{_fh}（{_tag}）· 基础图另存为 `molab_base_*.png`\n\n"
+                f"**种子 {_used_seed}** —— 想复现这一张，把 `SEED` 改成这个数字再跑。"
+            ))
+            _parts.append(mo.image(str(_p), width=_view_w))
+            _parts.append(mo.download(
+                _p.read_bytes(), filename=_p.name, label=f"⬇ 下载原图（{_fw}×{_fh}）"
+            ))
+            _out = mo.vstack(_parts)
     except Exception as _e:
         # ComfyUI 的 400 响应体里，"node_errors" 才是真正的错误原因，
         # 外层 error.message 只有一句 "Prompt outputs failed validation"。

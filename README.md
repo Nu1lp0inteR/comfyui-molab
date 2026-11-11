@@ -79,3 +79,27 @@
 | 容器内 `curl <公网地址>` | 200 | 隧道正常 |
 | 本机 `curl <公网地址>` | 200 | 你到隧道的网络正常 |
 | 本机浏览器打开 | 403 | **问题在浏览器状态**（cookie / 扩展 / 缓存） |
+
+## 高清放大（第 11 格里的一段）
+
+原 workflow 里 `UltimateSDUpscale` + `UpscaleModelLoader` 是 bypass 状态，现在接回主线：
+
+```
+VAEDecode → UltimateSDUpscale(分块重绘) → SaveImage
+                    ↑ 4x-AnimeSharp.pth
+```
+
+可调参数在格子顶部：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `UPSCALE` | `True` | `False` 只出基础图 |
+| `UPSCALE_BY` | `2.0` | 1024×1536 → 2048×3072 |
+| `UP_DENOISE` | `0.28` | 越低越贴原图，越高越"重画" |
+| `UP_STEPS` | `5` | 放大阶段重绘步数 |
+| `TILE_W/H` | `W, H` | 分块尺寸，2 倍图切成 2×2 共 4 块 |
+
+需要装节点 `ssitu/ComfyUI_UltimateSDUpscale`（已在第 9 格 `NODES` 里）。
+节点或模型缺失时第 11 格会自动降级为"只出基础图"，并在输出里给出提示，不会报错中断。
+
+基础图另存为 `molab_base_*.png`，放大版是 `molab_up_*.png`，可以对比。
