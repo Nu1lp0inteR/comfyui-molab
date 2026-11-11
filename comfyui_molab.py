@@ -387,7 +387,10 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
     # 只保留 comfy-core 节点，不依赖任何自定义节点（SageAttention 值为 disabled，也已去掉）
 
     W, H = 1024, 1536
-    SEED = 123456789
+    # SEED = -1 → 每次运行随机（等价于界面里 Seed 节点填 -1 再点 randomize）
+    # SEED ≥ 0 → 固定种子，可复现同一张图
+    # 注意：API 不接受 -1，下面会把它换成真正的随机整数
+    SEED = -1
     STEPS = 18
     CFG = 4.0
     SAMPLER = "sa_solver_pece"   # 若报 "Value not in list"，改成 "euler"
@@ -412,6 +415,11 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
         "twitter username, watermark"
     )
 
+    # -1 换成真正的随机种子（API 的 noise_seed 必须是 0 ≤ n ≤ 2^64-1）
+    import random as _random
+
+    _used_seed = SEED if SEED >= 0 else _random.randint(0, 2**53)
+
     wf = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
         "2": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 2.5, "sampling": "flow"}},
@@ -423,7 +431,7 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
         "8": {"class_type": "EmptyLatentImage", "inputs": {"width": W, "height": H, "batch_size": 1}},
         "9": {"class_type": "KSamplerAdvanced", "inputs": {
             "model": ["3", 0], "positive": ["6", 0], "negative": ["7", 0],
-            "latent_image": ["8", 0], "add_noise": "enable", "noise_seed": SEED,
+            "latent_image": ["8", 0], "add_noise": "enable", "noise_seed": _used_seed,
             "steps": STEPS, "cfg": CFG, "sampler_name": SAMPLER, "scheduler": SCHEDULER,
             "start_at_step": 0, "end_at_step": 10000, "return_with_leftover_noise": "disable"}},
         "10": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["5", 0]}},
@@ -463,7 +471,11 @@ def _(COMFY_DIR, COMFY_URL, json, mo, time, urllib):
             _p.parent.mkdir(parents=True, exist_ok=True)
             _p.write_bytes(urllib.request.urlopen(f"{COMFY_URL}/view?{_q}", timeout=180).read())
             _out = mo.vstack([
-                mo.md(f"## 第 11 格 · 出图完成\n\n`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒"),
+                mo.md(
+                    f"## 第 11 格 · 出图完成\n\n"
+                    f"`{_p.name}` · {_p.stat().st_size / 1024:.0f} KB · 耗时 {time.time() - _t0:.0f} 秒\n\n"
+                    f"**种子 {_used_seed}** —— 想复现这一张，把 `SEED` 改成这个数字再跑。"
+                ),
                 mo.image(str(_p)),
             ])
     except Exception as _e:
